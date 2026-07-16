@@ -1,0 +1,6 @@
+# Scene|LightLevel|ETTR|ALO|HTP|ISO|WB
+daylight|80|reduce_shutter|shadow_lift|priority_off|100|R120,G100,B90
+lowlight|10|increase_shutter|shadow_boost|priority_on|3200|R130,G100,B80
+shade|60|keep_shutter|neutral|priority_off|400|R110,G100,B105
+tungsten|20|increase_shutter|shadow_boost|priority_on|1600|R150,G100,B70
+unknown|128|keep_shutter|neutral|priority_off|400|R100,G100,B100
