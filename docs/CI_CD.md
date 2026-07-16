@@ -64,6 +64,22 @@ Then use **Actions -> Build AI Magic Lantern -> Run workflow**.
 3. Add the same id to the `for cam in ...` loop in `release.yml`'s organize step
    so its binary is placed and its absence is detected.
 
+## Operational gotchas (observed)
+
+- **`workflow_run` and `schedule` only fire from the default branch.** GitHub
+  runs these triggers using the workflow file on the repo's **default branch**
+  (`main`), not on feature branches. Because `build.yml`/`release.yml` currently
+  live only on `ai-lut-integration`, the nightly schedule and the automatic
+  `release.yml` trigger will **not** run until these files are merged to `main`.
+  The `push`/`pull_request` triggers do work on `ai-lut-integration` (that is
+  what builds on every push). Merge to `main` to activate nightly + release.
+- **Firmware may not build in stock CI yet.** A real Magic Lantern build needs
+  more than `gcc-arm-none-eabi` + `cd platform/<cam> && make` (host tools, build
+  invoked from the ML source root, etc.). Until that is wired up, build jobs stay
+  green (`make || true`) but produce no `magiclantern.bin`, so releases would be
+  `[PARTIAL]` with all cameras listed as missing. The `unified-lut` artifact is
+  produced normally. Hardening the firmware build is separate from this pipeline.
+
 ## Notes
 
 - `ML_SRC_ROOT` (env in `build.yml`) points at the vendored ML source. The spec
