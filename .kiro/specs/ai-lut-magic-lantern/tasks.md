@@ -70,7 +70,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Verify: script size <= 10 KB
   - _Requirements: REQ-001_
 
-- [ ] 4. Implement `lua_scripts/decision_engine.lua`
+- [x] 4. Implement `lua_scripts/decision_engine.lua`
   - Implement `compute_light_level(hist)` -- identical to logger (shared logic,
     duplicated across scripts to keep each script self-contained and < 10 KB)
   - Implement `load_unified_model(path)`:
