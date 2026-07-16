@@ -33,9 +33,13 @@ import zipfile
 
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 
+# Single source of adjustment: on-camera ETTR/ISO/WB/ALO/HTP is driven by the
+# AI-integrated firmware (ettr.mo reads ML/models/unified.tbl directly). So the
+# card ships the logger (data collection only) + the LUT, but NOT
+# decision_engine.lua -- that Lua engine was a parallel second adjustment source
+# and is superseded by the firmware integration (docs/ETTR_AI_INTEGRATION.md).
 AI_FILES = [
     ("lua_scripts/unified_logger.lua", "ML/scripts/unified_logger.lua"),
-    ("lua_scripts/decision_engine.lua", "ML/scripts/decision_engine.lua"),
     ("models/unified.tbl", "ML/models/unified.tbl"),
 ]
 LOGS_KEEP = "ML/logs/.keep"

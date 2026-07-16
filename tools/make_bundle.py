@@ -34,9 +34,12 @@ import zipfile
 # Fixed timestamp for reproducible (byte-identical) zips across runs.
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 
+# Single source of adjustment: the AI-integrated firmware (ettr.mo) drives
+# ETTR/ISO/WB/ALO/HTP from ML/models/unified.tbl. Ship the logger (data
+# collection) + the LUT, but NOT decision_engine.lua (superseded parallel
+# adjustment source). See docs/ETTR_AI_INTEGRATION.md.
 REPO_FILES = [
     ("lua_scripts/unified_logger.lua", "ML/scripts/unified_logger.lua"),
-    ("lua_scripts/decision_engine.lua", "ML/scripts/decision_engine.lua"),
     ("models/unified.tbl", "ML/models/unified.tbl"),
 ]
 FIRMWARE_FILES = ["autoexec.bin", "magiclantern.bin"]
@@ -55,15 +58,13 @@ def readme(camera, included_firmware):
         "Contents (all stored UNCOMPRESSED):\n"
         "  autoexec.bin / magiclantern.bin : firmware for this camera\n"
         "  ML/scripts/unified_logger.lua   : on-camera study/logging script\n"
-        "  ML/scripts/decision_engine.lua  : on-camera LUT decision engine\n"
         "  ML/models/unified.tbl           : the AI-trained lookup table\n"
         "  ML/logs/                        : where unified_log.txt is written\n\n"
         "Firmware included in this bundle: " + fw + "\n\n"
-        "The camera WRITES ML/logs/unified_log.txt on each half-press (it is not\n"
-        "shipped in this zip). unified_logger.lua logs sensor data; decision_engine.lua\n"
-        "applies ETTR/ISO/WB and logs its decisions. Both load when Magic Lantern's\n"
-        "Lua module is enabled -- if you only want to COLLECT data without the engine\n"
-        "changing settings, remove decision_engine.lua for the first pass.\n\n"
+        "Adjustment is single-source: the AI-integrated firmware (ETTR module)\n"
+        "reads ML/models/unified.tbl and drives ML's own ETTR/ISO/WB/ALO/HTP.\n"
+        "unified_logger.lua ONLY logs sensor data (no settings changes) to\n"
+        "ML/logs/unified_log.txt on each half-press, for offline training.\n\n"
         "HOW TO USE\n"
         "  This is NOT a complete from-scratch installer (no ML-SETUP.FIR or\n"
         "  full ML tree). If your card already runs Magic Lantern, copy the ML/\n"
