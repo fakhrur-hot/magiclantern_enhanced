@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""make_bundle.py -- assemble a convenience "AI Magic Lantern" bundle zip.
+"""make_bundle.py -- DEPRECATED minimal "AI Magic Lantern" overlay zip.
+
+Superseded by tools/make_full_bundle.py, which produces the single, complete
+flashable installer (full ML tree + ML-SETUP.FIR + AI-LUT payload). CI no longer
+uses this. Kept only for reference / cards where a full installer is unavailable.
+
+--- original docstring ---
+assemble a convenience "AI Magic Lantern" bundle zip.
 
 Packages the built firmware together with the AI-LUT payload (the two Lua
 scripts + unified.tbl) laid out for a Magic Lantern SD card:

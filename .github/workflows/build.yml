@@ -41,9 +41,10 @@ jobs:
       - name: Build ${{ matrix.camera }}
         run: |
           cd "${ML_SRC_ROOT}/platform/${{ matrix.camera }}"
-          # make || true keeps the matrix alive and tolerates the non-fatal zip
-          # packaging step (ML-SETUP.FIR / src/zip.txt are not vendored); the
-          # required build/magiclantern.bin is produced before that step.
+          # Builds the complete installer (build/magiclantern.zip with ML-SETUP.FIR)
+          # where the camera's FIR is vendored (6D.116). For cameras without a
+          # vendored FIR the zip step fails non-fatally; magiclantern.bin is still
+          # produced. make || true keeps the matrix alive.
           make clean && make || true
 
       - name: Upload firmware artifact
@@ -54,22 +55,28 @@ jobs:
           path: ${{ env.ML_SRC_ROOT }}/platform/${{ matrix.camera }}/build/magiclantern.bin
           if-no-files-found: warn   # absent binary is expected on build failure
 
-      - name: Package AI Magic Lantern bundle
-        # Convenience overlay: firmware + AI-LUT payload laid out for an SD card.
-        # Entries are STORED (uncompressed) so the camera reads plain files with
-        # no on-camera decompression overhead (see tools/make_bundle.py).
+      - name: Package full AI Magic Lantern installer
+        # Single deliverable: the COMPLETE flashable installer (full ML tree +
+        # ML-SETUP.FIR) with the AI-LUT payload injected. AI files are STORED
+        # (uncompressed) so the camera reads plain files -- no on-camera
+        # decompression (tools/make_full_bundle.py). Produced only when the full
+        # installer zip built (i.e. the camera's FIR is vendored).
         run: |
-          python3 tools/make_bundle.py \
-            --camera "${{ matrix.camera }}" \
-            --build-dir "${ML_SRC_ROOT}/platform/${{ matrix.camera }}/build" \
-            --out "ai-magiclantern-${{ matrix.camera }}.zip"
+          BASE="${ML_SRC_ROOT}/platform/${{ matrix.camera }}/build/magiclantern.zip"
+          if [ -f "$BASE" ]; then
+            python3 tools/make_full_bundle.py \
+              --base-zip "$BASE" \
+              --out "ai-magiclantern-${{ matrix.camera }}.zip"
+          else
+            echo "No full installer for ${{ matrix.camera }} (ML-SETUP.FIR not vendored); skipping."
+          fi
 
-      - name: Upload AI bundle artifact
+      - name: Upload full installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: ai-magiclantern-${{ matrix.camera }}
           path: ai-magiclantern-${{ matrix.camera }}.zip
-          if-no-files-found: warn
+          if-no-files-found: warn   # absent for cameras without a vendored FIR
 
   package-lut:
     name: Package unified LUT

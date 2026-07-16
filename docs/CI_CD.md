@@ -75,12 +75,12 @@ Then use **Actions -> Build AI Magic Lantern -> Run workflow**.
   `release.yml` trigger, set the repo's **default branch to `ai-lut-integration`**
   (GitHub -> Settings -> Branches). No merge is needed; the AI-LUT layout
   (ML source under `source-dev/`) stays intact.
-- **Firmware may not build in stock CI yet.** A real Magic Lantern build needs
-  more than `gcc-arm-none-eabi` + `cd platform/<cam> && make` (host tools, build
-  invoked from the ML source root, etc.). Until that is wired up, build jobs stay
-  green (`make || true`) but produce no `magiclantern.bin`, so releases would be
-  `[PARTIAL]` with all cameras listed as missing. The `unified-lut` artifact is
-  produced normally. Hardening the firmware build is separate from this pipeline.
+- **Firmware build status.** The build is wired up (chmod +x on build scripts;
+  binary at `build/magiclantern.bin`). The **6D.116** builds the complete
+  installer in CI (its `ML-SETUP.FIR` + `src/zip.txt` are vendored). Cameras
+  whose FIR is not vendored still build `magiclantern.bin` but not the full
+  installer zip (their `ai-magiclantern-<camera>` artifact is skipped) — vendor
+  their `platform/<cam>/ML-SETUP.FIR` the same way to enable full installers.
 
 ## Notes
 
@@ -89,7 +89,9 @@ Then use **Actions -> Build AI Magic Lantern -> Run workflow**.
   under `source-dev/`, so `ML_SRC_ROOT: source-dev`. Set it to `.` once the ML
   source is promoted to the repo root.
 - Artifacts: `magiclantern-<camera>` (raw firmware bin, per camera),
-  `ai-magiclantern-<camera>` (convenience bundle zip = firmware + AI-LUT payload,
-  stored uncompressed; see `tools/make_bundle.py`), and `unified-lut` (once).
+  `ai-magiclantern-<camera>` (the COMPLETE flashable installer = full ML tree +
+  ML-SETUP.FIR + AI-LUT payload, AI files stored uncompressed; built by
+  `tools/make_full_bundle.py`, only for cameras whose FIR is vendored), and
+  `unified-lut` (once). `tools/make_bundle.py` (minimal overlay) is deprecated.
 - `unified-lut` is uploaded by a dedicated `package-lut` job because
   `upload-artifact@v4` artifact names must be unique per run.
