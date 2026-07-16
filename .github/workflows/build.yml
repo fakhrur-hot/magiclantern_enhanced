@@ -54,6 +54,23 @@ jobs:
           path: ${{ env.ML_SRC_ROOT }}/platform/${{ matrix.camera }}/build/magiclantern.bin
           if-no-files-found: warn   # absent binary is expected on build failure
 
+      - name: Package AI Magic Lantern bundle
+        # Convenience overlay: firmware + AI-LUT payload laid out for an SD card.
+        # Entries are STORED (uncompressed) so the camera reads plain files with
+        # no on-camera decompression overhead (see tools/make_bundle.py).
+        run: |
+          python3 tools/make_bundle.py \
+            --camera "${{ matrix.camera }}" \
+            --build-dir "${ML_SRC_ROOT}/platform/${{ matrix.camera }}/build" \
+            --out "ai-magiclantern-${{ matrix.camera }}.zip"
+
+      - name: Upload AI bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-magiclantern-${{ matrix.camera }}
+          path: ai-magiclantern-${{ matrix.camera }}.zip
+          if-no-files-found: warn
+
   package-lut:
     name: Package unified LUT
     runs-on: ubuntu-latest

@@ -47,6 +47,10 @@ jobs:
             else
               MISSING="$MISSING ${cam}"
             fi
+            # convenience bundle (firmware + AI-LUT payload, uncompressed)
+            if [ -f "artifacts/ai-magiclantern-${cam}/ai-magiclantern-${cam}.zip" ]; then
+              cp "artifacts/ai-magiclantern-${cam}/ai-magiclantern-${cam}.zip" "$dest/"
+            fi
           done
           echo "PRESENT_CAMS=${PRESENT# }" >> "$GITHUB_ENV"
           if [ -n "$MISSING" ]; then

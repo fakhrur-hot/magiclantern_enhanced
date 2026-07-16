@@ -88,6 +88,8 @@ Then use **Actions -> Build AI Magic Lantern -> Run workflow**.
   references the build path as `platform/<camera>/`; in this repo the source is
   under `source-dev/`, so `ML_SRC_ROOT: source-dev`. Set it to `.` once the ML
   source is promoted to the repo root.
-- Artifacts: `magiclantern-<camera>` (per camera) and `unified-lut` (once).
+- Artifacts: `magiclantern-<camera>` (raw firmware bin, per camera),
+  `ai-magiclantern-<camera>` (convenience bundle zip = firmware + AI-LUT payload,
+  stored uncompressed; see `tools/make_bundle.py`), and `unified-lut` (once).
 - `unified-lut` is uploaded by a dedicated `package-lut` job because
   `upload-artifact@v4` artifact names must be unique per run.
