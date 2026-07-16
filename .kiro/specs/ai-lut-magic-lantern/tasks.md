@@ -113,7 +113,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Verify: script size <= 10 KB
   - _Requirements: REQ-003_
 
-- [ ] 5. Implement `colab/lut_training.ipynb`
+- [x] 5. Implement `colab/lut_training.ipynb`
   - Cell 1: upload `unified_log.txt` via `google.colab.files.upload()`
   - Cell 2: parse log into Pandas DataFrame (key=value, `---` separator)
   - Cell 3: feature engineering -- `LightLevel` to int, `ISO` to int,
@@ -130,7 +130,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Validate: runs end-to-end on `sample_unified_log.txt` without errors
   - _Requirements: REQ-004_
 
-- [ ] 6. Implement `colab/lut_training_multi_param.py`
+- [x] 6. Implement `colab/lut_training_multi_param.py`
   - Replicate notebook logic as standalone CLI Python script
   - Read `unified_log.txt` from CWD; write `unified.tbl` to CWD
   - Save `iso_model.joblib` for incremental retraining
