@@ -157,7 +157,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Body from `release_templates/ReleaseNotes.md`
   - _Requirements: REQ-005_
 
-- [ ] 9. Write documentation files
+- [x] 9. Write documentation files
   - `docs/VALIDATION.md`: exiftool validation steps, ISO/WB match rate metrics,
     ETTR histogram check (90th-percentile bin in 180-240 after reduce_shutter)
   - `docs/TROUBLESHOOTING.md`: LUT not loaded, wrong ISO/WB in CR2, build failures,
