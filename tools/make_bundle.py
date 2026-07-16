@@ -41,6 +41,11 @@ REPO_FILES = [
 ]
 FIRMWARE_FILES = ["autoexec.bin", "magiclantern.bin"]
 
+# The scripts append to A:/ML/logs/unified_log.txt with io.open(..., "a"), which
+# creates the file but NOT a missing directory. Ship a placeholder so the logs/
+# folder exists on a fresh card and logging never silently fails.
+LOGS_KEEP = "ML/logs/.keep"
+
 
 def readme(camera, included_firmware):
     fw = ", ".join(included_firmware) if included_firmware else "(none -- build failed)"
@@ -51,8 +56,14 @@ def readme(camera, included_firmware):
         "  autoexec.bin / magiclantern.bin : firmware for this camera\n"
         "  ML/scripts/unified_logger.lua   : on-camera study/logging script\n"
         "  ML/scripts/decision_engine.lua  : on-camera LUT decision engine\n"
-        "  ML/models/unified.tbl           : the AI-trained lookup table\n\n"
+        "  ML/models/unified.tbl           : the AI-trained lookup table\n"
+        "  ML/logs/                        : where unified_log.txt is written\n\n"
         "Firmware included in this bundle: " + fw + "\n\n"
+        "The camera WRITES ML/logs/unified_log.txt on each half-press (it is not\n"
+        "shipped in this zip). unified_logger.lua logs sensor data; decision_engine.lua\n"
+        "applies ETTR/ISO/WB and logs its decisions. Both load when Magic Lantern's\n"
+        "Lua module is enabled -- if you only want to COLLECT data without the engine\n"
+        "changing settings, remove decision_engine.lua for the first pass.\n\n"
         "HOW TO USE\n"
         "  This is NOT a complete from-scratch installer (no ML-SETUP.FIR or\n"
         "  full ML tree). If your card already runs Magic Lantern, copy the ML/\n"
@@ -98,6 +109,7 @@ def main(argv):
                 return 1
             with open(src, "rb") as fh:
                 add_stored(zf, arc, fh.read())
+        add_stored(zf, LOGS_KEEP, b"")  # ensure A:/ML/logs/ exists on the card
         add_stored(zf, "README.txt", readme(args.camera, included_fw).encode("utf-8"))
 
     print(f"Wrote {args.out} (firmware: {included_fw or 'none'}; missing: {missing or 'none'})")
