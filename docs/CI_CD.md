@@ -67,12 +67,14 @@ Then use **Actions -> Build AI Magic Lantern -> Run workflow**.
 ## Operational gotchas (observed)
 
 - **`workflow_run` and `schedule` only fire from the default branch.** GitHub
-  runs these triggers using the workflow file on the repo's **default branch**
-  (`main`), not on feature branches. Because `build.yml`/`release.yml` currently
-  live only on `ai-lut-integration`, the nightly schedule and the automatic
-  `release.yml` trigger will **not** run until these files are merged to `main`.
+  runs these triggers using the workflow file on the repo's **default branch**,
+  not on feature branches. This repo has no `main`; the original default was
+  `dev` (an unrelated Magic Lantern history with the ML source at the repo root).
   The `push`/`pull_request` triggers do work on `ai-lut-integration` (that is
-  what builds on every push). Merge to `main` to activate nightly + release.
+  what builds on every push). To activate the nightly schedule and the automatic
+  `release.yml` trigger, set the repo's **default branch to `ai-lut-integration`**
+  (GitHub -> Settings -> Branches). No merge is needed; the AI-LUT layout
+  (ML source under `source-dev/`) stays intact.
 - **Firmware may not build in stock CI yet.** A real Magic Lantern build needs
   more than `gcc-arm-none-eabi` + `cd platform/<cam> && make` (host tools, build
   invoked from the ML source root, etc.). Until that is wired up, build jobs stay
