@@ -22,7 +22,8 @@
 #include <console.h>
 
 /* interface with dual ISO */
-#include "../dual_iso/dual_iso.h" 
+#include "../dual_iso/dual_iso.h"
+#include "ai_lut.h"   /* AI-LUT: learned per-scene ISO/WB/ALO/HTP for the optimizer */
 
 static CONFIG_INT("auto.ettr", auto_ettr, 0);
 static CONFIG_INT("auto.ettr.trigger", auto_ettr_trigger, 3);
@@ -1622,22 +1623,30 @@ static void auto_iso_optimizer_step()
 
     if (is_auto_iso && mode_ok && !was_auto_iso)
     {
-        /* Enable HTP + ALO in every creative mode. HTP also raises the
-         * camera's OWN Auto-ISO floor to 200 (Canon disables ISO 100 under
-         * HTP); with HTP off the floor is 100. */
-        set_htp(1);
-        set_alo(ALO_STD);
+        /* AI-LUT (single source of adjustment): apply the learned per-scene
+         * HTP/ALO/WB via ML's OWN setters and get the learned starting ISO.
+         * Falls back to the previous hardcoded HTP+ALO when no LUT row applies,
+         * so nothing regresses. The metered ETTR still owns the exposure push. */
+        int ai_iso = ai_lut_apply();
+        if (ai_iso <= 0)
+        {
+            /* No LUT / no match: enable HTP + ALO as before. HTP also raises the
+             * camera's OWN Auto-ISO floor to 200 (Canon disables ISO 100 under
+             * HTP); with HTP off the floor is 100. */
+            set_htp(1);
+            set_alo(ALO_STD);
+        }
 
         if (shooting_mode == SHOOTMODE_M)
         {
             /* Only in M can ETTR actually drive exposure -- it needs control
              * of ISO+shutter, which Canon owns in P/Av/Tv (ETTR bails out
              * there, see auto_ettr_step / auto_ettr_check_pre_lv). So only in M
-             * do we hand over: arm ETTR, half-shutter meters, manual ISO at the
-             * floor. MIN_ISO = get_htp() ? 80 (ISO200) : 72 (ISO100). */
+             * do we hand over: arm ETTR, half-shutter meters, ISO at the learned
+             * (or MIN_ISO) floor. MIN_ISO = get_htp() ? 80 (ISO200) : 72 (ISO100). */
             auto_ettr = 1;
             auto_ettr_trigger = 3;   /* Half-Shutter */
-            lens_set_rawiso(MIN_ISO);
+            lens_set_rawiso(ai_iso > 0 ? ai_iso_to_raw(ai_iso) : MIN_ISO);
         }
         /* P/Av/Tv: deliberately DO NOT force a manual ISO. Canon's native Auto
          * ISO is already dynamic; we just let it run, now floored at 200 (HTP)
