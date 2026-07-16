@@ -32,10 +32,19 @@ jobs:
       - name: Install ARM toolchain and build deps
         run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi make zip python3
 
+      - name: Restore executable bit on build scripts
+        # A fresh checkout does not preserve the +x bit on the ML build helper
+        # scripts (e.g. build_tools/git_summary.py). Without it, version.bin
+        # fails with "Permission denied" (Error 126) and no binary is produced.
+        run: find "${ML_SRC_ROOT}" -type f \( -name '*.py' -o -name '*.sh' \) -exec chmod +x {} +
+
       - name: Build ${{ matrix.camera }}
         run: |
           cd "${ML_SRC_ROOT}/platform/${{ matrix.camera }}"
-          make clean && make || true   # keep the matrix alive; missing bin -> [PARTIAL] release
+          # make || true keeps the matrix alive and tolerates the non-fatal zip
+          # packaging step (ML-SETUP.FIR / src/zip.txt are not vendored); the
+          # required build/magiclantern.bin is produced before that step.
+          make clean && make || true
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
