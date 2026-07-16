@@ -139,7 +139,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Validate: output `unified.tbl` is byte-identical to notebook for same input
   - _Requirements: REQ-004_
 
-- [ ] 7. Implement `.github/workflows/build.yml`
+- [x] 7. Implement `.github/workflows/build.yml`
   - Triggers: push/PR to `ai-lut-integration`, nightly `0 2 * * *`
   - Matrix: `camera: [6D.116, 5D3.113, 60D.111, 650D.104]`
   - Steps: checkout, `apt-get install gcc-arm-none-eabi make`,
@@ -148,7 +148,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Upload `models/unified.tbl` as artifact `unified-lut`
   - _Requirements: REQ-005_
 
-- [ ] 8. Implement `.github/workflows/release.yml`
+- [x] 8. Implement `.github/workflows/release.yml`
   - Trigger: `workflow_run` on completion of `Build AI Magic Lantern`
   - Download all artifacts; organize into `release/EOS-{model}/`
   - Copy `unified.tbl` into each camera folder

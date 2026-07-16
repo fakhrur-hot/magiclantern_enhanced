@@ -1,0 +1,79 @@
+name: Release AI Magic Lantern
+
+# REQ-005: on a successful build, organize artifacts into per-camera folders,
+# copy unified.tbl into each, and publish a GitHub Release. If any camera binary
+# is missing, the release is tagged [PARTIAL] and the body lists the gaps.
+
+on:
+  workflow_run:
+    workflows: ["Build AI Magic Lantern"]
+    types: [completed]
+
+permissions:
+  contents: write   # required to create releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+
+      - name: Organize per-camera folders and detect missing binaries
+        run: |
+          mkdir -p release
+          MISSING=""
+          PRESENT=""
+          for cam in 6D.116 5D3.113 60D.111 650D.104; do
+            model="${cam%%.*}"
+            dest="release/EOS-${model}"
+            mkdir -p "$dest"
+            # unified.tbl goes into every camera folder (fall back to repo copy)
+            if [ -f "artifacts/unified-lut/unified.tbl" ]; then
+              cp "artifacts/unified-lut/unified.tbl" "$dest/"
+            else
+              cp "models/unified.tbl" "$dest/" || true
+            fi
+            if [ -f "artifacts/magiclantern-${cam}/magiclantern.bin" ]; then
+              cp "artifacts/magiclantern-${cam}/magiclantern.bin" "$dest/"
+              PRESENT="$PRESENT ${cam}"
+            else
+              MISSING="$MISSING ${cam}"
+            fi
+          done
+          echo "PRESENT_CAMS=${PRESENT# }" >> "$GITHUB_ENV"
+          if [ -n "$MISSING" ]; then
+            echo "RELEASE_TITLE=[PARTIAL] AI Magic Lantern Build ${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+            echo "MISSING_CAMS=${MISSING# }" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TITLE=AI Magic Lantern Build ${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+            echo "MISSING_CAMS=None" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release notes from template
+        run: |
+          COMMIT="$(git rev-parse HEAD)"
+          DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          CAMERAS="${PRESENT_CAMS:-None}"
+          cp release_templates/ReleaseNotes.md release_notes.md
+          sed -i "s|__COMMIT__|${COMMIT}|g" release_notes.md
+          sed -i "s|__DATE__|${DATE}|g" release_notes.md
+          sed -i "s|__CAMERAS__|${CAMERAS}|g" release_notes.md
+          sed -i "s|__MISSING__|${MISSING_CAMS}|g" release_notes.md
+          echo "----- release_notes.md -----"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: ${{ env.RELEASE_TITLE }}
+          body_path: release_notes.md
+          files: release/**/*

@@ -1,0 +1,58 @@
+name: Build AI Magic Lantern
+
+# REQ-005: build Magic Lantern firmware for the camera matrix and publish the
+# binaries + unified.tbl as artifacts. release.yml triggers on this workflow's
+# successful completion (matched by the name above).
+
+on:
+  push:
+    branches: [ai-lut-integration]
+  pull_request:
+    branches: [ai-lut-integration]
+  schedule:
+    - cron: "0 2 * * *"   # nightly 02:00 UTC
+
+env:
+  # Root of the vendored Magic Lantern source. The spec references the build
+  # path as platform/<camera>/; in this repo the source lives under source-dev/.
+  # Set to "." once the ML source is promoted to the repo root.
+  ML_SRC_ROOT: source-dev
+
+jobs:
+  build:
+    name: Build ${{ matrix.camera }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # one camera failing must not cancel the others
+      matrix:
+        camera: [6D.116, 5D3.113, 60D.111, 650D.104]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi make
+
+      - name: Build ${{ matrix.camera }}
+        run: |
+          cd "${ML_SRC_ROOT}/platform/${{ matrix.camera }}"
+          make clean && make || true   # keep the matrix alive; missing bin -> [PARTIAL] release
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: magiclantern-${{ matrix.camera }}
+          path: ${{ env.ML_SRC_ROOT }}/platform/${{ matrix.camera }}/magiclantern.bin
+          if-no-files-found: warn   # absent binary is expected on build failure
+
+  package-lut:
+    name: Package unified LUT
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload unified.tbl artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unified-lut
+          path: models/unified.tbl
+          if-no-files-found: error
