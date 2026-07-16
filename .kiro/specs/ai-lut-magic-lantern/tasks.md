@@ -49,7 +49,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
     (key=value format, `---` separator, LightLevel as integer 0-255)
   - _Requirements: REQ-002_
 
-- [ ] 3. Implement `lua_scripts/unified_logger.lua`
+- [x] 3. Implement `lua_scripts/unified_logger.lua`
   - Implement `compute_light_level(hist)` using integer-only 90th-percentile
     algorithm (see design doc Component 1):
     - `total` = sum of all 256 bins (integer addition loop)
