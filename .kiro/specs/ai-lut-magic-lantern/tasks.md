@@ -22,7 +22,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
 
 ## Tasks
 
-- [ ] 1. Set up repository structure and GitHub remote connection
+- [x] 1. Set up repository structure and GitHub remote connection
   - Create top-level directories: `lua_scripts/`, `colab/`, `models/`, `logs/`,
     `docs/`, `release_templates/`, `.github/workflows/`
   - Add skeleton files: `README.md`, `INSTALL.md`, `ARCHITECTURE.md`,
@@ -34,7 +34,7 @@ Integer-only math. No GPU. No FPU. No floating-point constants.
   - Push initial skeleton commit to `ai-lut-integration`
   - _Requirements: REQ-008, REQ-009_
 
-- [ ] 2. Create the unified LUT seed file and sample log
+- [x] 2. Create the unified LUT seed file and sample log
   - Write `models/unified.tbl` with the 5-scene seed rows:
     ```
     # Scene|LightLevel|ETTR|ALO|HTP|ISO|WB
