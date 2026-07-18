@@ -1702,6 +1702,13 @@ static unsigned int auto_ettr_polling_cbr()
 
     if (lv && NOT_RECORDING && ((void*)&raw_lv_request != (void*)&ret_0))
         auto_ettr_step_lv();
+
+    /* Keep the ML console off LiveView while logging: raw metering (raw.c buffer
+     * messages) and any ETTR debug prints go to the console and otherwise pile up
+     * over the whole screen. The log is file-based, so nothing is lost. */
+    if (ai_data_logging && lv)
+        console_hide();
+
     return 0;
 }
 
