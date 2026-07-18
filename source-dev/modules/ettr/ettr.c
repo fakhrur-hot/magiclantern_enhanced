@@ -1667,14 +1667,25 @@ static unsigned int auto_ettr_polling_cbr()
 {
     auto_iso_optimizer_step();
 
-    /* AI data logging: append one record on the half-shutter rising edge.
-     * Independent of the optimizer toggle, so ground-truth (AI-off) passes log
+    /* AI data logging: log ONCE per half-press, but only once the histogram is
+     * built AND ISO is resolved -- both lag the rising edge during metering, so
+     * logging on the edge caught inconsistent snapshots (ISO=0 or LightLevel=128
+     * fallback). Independent of the optimizer, so AI-off ground-truth passes log
      * native metering. Histogram is only meaningful in LiveView. */
-    static int ai_was_half = 0;
-    int hs = get_halfshutter_pressed();
-    if (ai_data_logging && hs && !ai_was_half)
-        ai_lut_log();
-    ai_was_half = hs;
+    static int ai_logged_press = 0;
+    if (!get_halfshutter_pressed())
+    {
+        ai_logged_press = 0;
+    }
+    else if (ai_data_logging && !ai_logged_press)
+    {
+        int riso = lens_info.raw_iso ? lens_info.raw_iso : lens_info.raw_iso_auto;
+        if (histogram.total_px > 0 && riso > 0)
+        {
+            ai_lut_log();
+            ai_logged_press = 1;
+        }
+    }
 
     if (lv && NOT_RECORDING && ((void*)&raw_lv_request != (void*)&ret_0))
         auto_ettr_step_lv();
