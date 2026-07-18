@@ -872,6 +872,30 @@ static void auto_ettr_step_task(int corr)
     auto_ettr_running = 0;
 }
 
+/* Photo/QR metering with retry. The intermittent OVF ETTR miss was here: at QR
+ * the just-captured raw buffer can lag the review opening by a frame or two, so
+ * the old one-shot raw_update_params() failed ("Raw error") and the shot was
+ * skipped -- leaving it underexposed. Retry for ~0.5 s before giving up. */
+static void auto_ettr_photo_task(int unused)
+{
+    int ok = 0;
+    for (int i = 0; i < 10 && !ok; i++)
+    {
+        ok = raw_update_params();
+        if (!ok) msleep(50);
+    }
+    if (ok)
+    {
+        int corr = auto_ettr_get_correction();
+        if (corr != INT_MIN)
+        {
+            auto_ettr_step_task(corr);   /* applies the correction + clears the flag */
+            return;
+        }
+    }
+    auto_ettr_running = 0;
+}
+
 /* photo mode only, no LV */
 static void auto_ettr_step()
 {
@@ -881,19 +905,9 @@ static void auto_ettr_step()
     if (auto_ettr_running) return;
     if (is_hdr_bracketing_enabled() && !AUTO_ETTR_TRIGGER_BY_SET) return;
 
-    if (!raw_update_params())
-    {
-        NotifyBox(5000, "Raw error");
-        return;
-    }
-
-    int corr = auto_ettr_get_correction();
-    if (corr != INT_MIN)
-    {
-        /* we'd better not change expo settings from prop task (we won't get correct confirmations) */
-        auto_ettr_running = 1;
-        task_create("ettr_task", 0x1c, 0x1000, auto_ettr_step_task, (void*) corr);
-    }
+    /* meter in a task so it can wait for the raw buffer (see above) */
+    auto_ettr_running = 1;
+    task_create("ettr_task", 0x1c, 0x1000, auto_ettr_photo_task, (void*) 0);
 }
 
 static int auto_ettr_check_pre_lv()
