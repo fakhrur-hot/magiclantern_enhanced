@@ -1478,7 +1478,13 @@ static unsigned int auto_ettr_keypress_cbr(unsigned int key)
     
     if (
             (AUTO_ETTR_TRIGGER_BY_SET && key == MODULE_KEY_PRESS_SET) ||
-            (AUTO_ETTR_TRIGGER_BY_HALFSHUTTER && key == MODULE_KEY_PRESS_HALFSHUTTER) ||
+            /* Half-shutter trigger meters ONLY when already in LiveView. In OVF
+             * this task would force_liveview() to meter -- which fired on the
+             * finger-release after every shot (release passes back through the
+             * half-press detent -> new PRESS_HALFSHUTTER event) and popped the
+             * camera into LV. OVF instead meters from the QR image (see
+             * PROP_GUI_STATE), with no LiveView interruption. */
+            (AUTO_ETTR_TRIGGER_BY_HALFSHUTTER && key == MODULE_KEY_PRESS_HALFSHUTTER && lv) ||
        0)
     {
         if (!auto_ettr_running)
@@ -1586,7 +1592,10 @@ PROP_HANDLER(PROP_GUI_STATE)
 {
     if (buf[0] == GUISTATE_QR)
     {
-        if (AUTO_ETTR_TRIGGER_PHOTO)
+        /* Half-shutter trigger too: in OVF, meter from the picture just taken
+         * (photo path, no LV) and silently refine exposure for the next shot.
+         * Requires Canon image review enabled (same as the other photo triggers). */
+        if (AUTO_ETTR_TRIGGER_PHOTO || AUTO_ETTR_TRIGGER_BY_HALFSHUTTER)
             auto_ettr_step();
     }
 }
