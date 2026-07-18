@@ -28,7 +28,12 @@
 static CONFIG_INT("auto.ettr", auto_ettr, 0);
 static CONFIG_INT("auto.ettr.trigger", auto_ettr_trigger, 3);
 static CONFIG_INT("auto.ettr.ignore", auto_ettr_ignore, 1);
-static CONFIG_INT("auto.ettr.level", auto_ettr_target_level, -1);
+/* Default ETTR exposure target: 0 => the aggressive -0.5 EV (firmware clamps the
+ * target to MIN(level, -0.5); -0.5 is the closest-to-clip ML allows -- its
+ * metering-safety margin -- so it's the practical "-1/3 EV, highlights just under
+ * clip" aesthetic). Still user-adjustable: Expo > Auto ETTR > Exposure target
+ * (-4/-3/-2/-1/-0.5 EV). Was -1 (a full stop below clip, too timid). */
+static CONFIG_INT("auto.ettr.level", auto_ettr_target_level, 0);
 static CONFIG_INT("auto.ettr.max.tv", auto_ettr_max_shutter, 88);
 static CONFIG_INT("auto.ettr.clip", auto_ettr_clip, 0);
 static CONFIG_INT("auto.ettr.mode", auto_ettr_adjust_mode, 0);
