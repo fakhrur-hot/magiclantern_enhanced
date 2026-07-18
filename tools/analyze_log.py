@@ -39,7 +39,7 @@ def main(argv):
         print("usage: python tools/analyze_log.py <unified_log.txt>")
         return 2
     path = argv[1]
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
         text = fh.read()
 
     # Line-based marker counts (markers are appended as standalone lines).

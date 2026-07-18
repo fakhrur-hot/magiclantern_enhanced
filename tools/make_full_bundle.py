@@ -46,6 +46,24 @@ AI_FILES = [
 LOGS_KEEP = "ML/logs/.keep"  # firmware writes unified_log.txt here
 
 
+# Hard camera limits: the firmware reads each .tbl with a SINGLE 8 KB FIO read
+# and caps the parsed LUT at 128 rows. An oversized table must never be bundled.
+TBL_MAX_BYTES = 8192
+TBL_MAX_ROWS = 128
+
+
+def check_tbl(path, data):
+    """Enforce the firmware caps on a .tbl payload. Returns an error string or None."""
+    if len(data) >= TBL_MAX_BYTES:
+        return f"{path}: {len(data)} bytes >= {TBL_MAX_BYTES} (single FIO read cap)"
+    rows = [ln for ln in data.decode("utf-8", errors="replace").splitlines()
+            if "|" in ln and not ln.lstrip().startswith("#")
+            and not ln.lstrip().lower().startswith("scene|")]  # skip header
+    if len(rows) > TBL_MAX_ROWS:
+        return f"{path}: {len(rows)} data rows > {TBL_MAX_ROWS} (firmware row cap)"
+    return None
+
+
 def add_stored(zf, arcname, data):
     info = zipfile.ZipInfo(arcname, date_time=FIXED_DATE)
     info.compress_type = zipfile.ZIP_STORED
@@ -66,7 +84,7 @@ def main(argv):
               file=sys.stderr)
         return 1
 
-    ai_arcs = {arc for _, arc in AI_FILES}
+    ai_arcs = {arc for _, arc in AI_FILES} | {LOGS_KEEP}
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     with zipfile.ZipFile(args.base_zip, "r") as base, \
@@ -84,7 +102,14 @@ def main(argv):
                 print(f"ERROR: required AI-LUT file missing: {src}", file=sys.stderr)
                 return 1
             with open(src, "rb") as fh:
-                add_stored(out, arc, fh.read())
+                data = fh.read()
+            if arc.endswith(".tbl"):
+                err = check_tbl(src, data)
+                if err:
+                    print(f"ERROR: {err} -- refusing to bundle a table the camera "
+                          "cannot load", file=sys.stderr)
+                    return 1
+            add_stored(out, arc, data)
         add_stored(out, LOGS_KEEP, b"")
 
     print(f"Wrote {args.out}: {copied} original ML files + {len(AI_FILES)} AI files + logs dir")

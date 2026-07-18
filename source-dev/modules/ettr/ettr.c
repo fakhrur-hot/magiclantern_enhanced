@@ -1998,6 +1998,7 @@ MODULE_PROPHANDLERS_END()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(auto_ettr)
+    MODULE_CONFIG(auto_iso_optimizer)
     MODULE_CONFIG(ai_data_logging)
     MODULE_CONFIG(ai_white_balance)
     MODULE_CONFIG(ai_picture_tune_en)

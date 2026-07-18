@@ -279,12 +279,14 @@ static int ai_lut_apply(void)
     struct ai_lut_row * row = &ai_rows[idx];
     set_htp(row->htp);
     set_alo(row->alo);
-    /* LUT WB is G=100 reference; convert to the 1024=neutral gain scale.
+    /* LUT WB is green-referenced; normalize by the row's own green (usually
+     * 100, but don't assume -- a retrained row with G!=100 would otherwise be
+     * silently wrong) and convert to the 1024=neutral gain scale.
      * (Only fires for a known scene; white-point WB owns WB otherwise.) */
     if (!streq(scene, "unknown"))
-        lens_set_custom_wb_gains(row->wb_r * AI_WB_NEUTRAL / 100,
+        lens_set_custom_wb_gains(row->wb_r * AI_WB_NEUTRAL / row->wb_g,
                                  AI_WB_NEUTRAL,
-                                 row->wb_b * AI_WB_NEUTRAL / 100);
+                                 row->wb_b * AI_WB_NEUTRAL / row->wb_g);
     return row->iso;
 }
 
@@ -335,7 +337,7 @@ static int ai_white_point_wb(void)
 
     int black = raw_info.black_level;
     int span = raw_info.white_level - black;
-    if (span <= 0) return 0;
+    if (span < 8) return 0;   /* also guards span/2 - span/8 == 0 below */
     for (int i = 0; i < 3; i++)
     {
         r[i] -= black; g[i] -= black; b[i] -= black;

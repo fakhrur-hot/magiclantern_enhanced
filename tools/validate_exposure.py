@@ -140,11 +140,15 @@ def main(argv):
             continue
         verdicts.append(st["verdict"])
         rec = None
-        for cand in (n - 1, n):   # CR2 N pairs with the half-press logged at FileNum N-1
-            if cand in by_filenum:
-                rec = by_filenum[cand][-1]
-                break
-        log_ll = int(rec["LightLevel"]) if rec else None
+        if n is not None:   # a CR2 without a numeric suffix can't pair with a FileNum
+            for cand in (n - 1, n):   # CR2 N pairs with the half-press logged at FileNum N-1
+                if cand in by_filenum:
+                    rec = by_filenum[cand][-1]
+                    break
+        try:
+            log_ll = int(rec["LightLevel"]) if rec else None
+        except (ValueError, KeyError):   # malformed logged value -- treat as unmatched
+            log_ll = None
         pair = f"FileNum={rec['FileNum']}" if rec else "(no log match)"
         if log_ll is not None:
             logged.append(log_ll); trues.append(st["light_true"])
