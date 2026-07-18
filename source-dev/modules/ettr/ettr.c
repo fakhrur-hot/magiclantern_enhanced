@@ -41,6 +41,10 @@ static CONFIG_INT("auto.ettr.allow.beeps", auto_ettr_allow_beeps, 1);
  * drive it. Floor is enforced by MIN_ISO: ISO 200 with HTP, ISO 100 without. */
 static CONFIG_INT("auto.ettr.iso.optimizer", auto_iso_optimizer, 1);
 
+/* AI data logging: append one record to ML/logs/unified_log.txt on each
+ * half-shutter press (firmware-side; ML Lua has no histogram access). */
+static CONFIG_INT("auto.ettr.ai.logging", ai_data_logging, 1);
+
 static int debug_info = 0;
 static int show_metered_areas = 0;
 
@@ -1663,6 +1667,15 @@ static unsigned int auto_ettr_polling_cbr()
 {
     auto_iso_optimizer_step();
 
+    /* AI data logging: append one record on the half-shutter rising edge.
+     * Independent of the optimizer toggle, so ground-truth (AI-off) passes log
+     * native metering. Histogram is only meaningful in LiveView. */
+    static int ai_was_half = 0;
+    int hs = get_halfshutter_pressed();
+    if (ai_data_logging && hs && !ai_was_half)
+        ai_lut_log();
+    ai_was_half = hs;
+
     if (lv && NOT_RECORDING && ((void*)&raw_lv_request != (void*)&ret_0))
         auto_ettr_step_lv();
     return 0;
@@ -1791,6 +1804,13 @@ static struct menu_entry ettr_menu[] =
                 .help2 = "Floor ISO 200 w/HTP, 100 w/o. ETTR only runs in M mode.",
             },
             {
+                .name = "AI Data Logging",
+                .priv = &ai_data_logging,
+                .max = 1,
+                .help  = "Log sensor data to ML/logs/unified_log.txt on half-press.",
+                .help2 = "For AI-LUT training. Use in LiveView. Turn off for normal use.",
+            },
+            {
                 .name = "Show debug info",
                 .priv = &debug_info,
                 .select = debug_info_toggle,
@@ -1837,6 +1857,7 @@ MODULE_PROPHANDLERS_END()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(auto_ettr)
+    MODULE_CONFIG(ai_data_logging)
     MODULE_CONFIG(auto_ettr_trigger)
     MODULE_CONFIG(auto_ettr_ignore)
     MODULE_CONFIG(auto_ettr_target_level)

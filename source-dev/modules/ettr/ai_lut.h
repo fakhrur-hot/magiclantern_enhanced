@@ -200,4 +200,61 @@ static int ai_lut_apply(void)
     return row->iso;
 }
 
+/* --------------------------------------------------------------------------
+ * Firmware-side data logging (replaces the non-viable Lua logger: ML Lua has no
+ * histogram access). Appends one key=value record to ML/logs/unified_log.txt on
+ * each half-shutter press. LightLevel comes from the real ML histogram; camera
+ * state from lens_info. Format matches the offline trainer's parser.
+ * -------------------------------------------------------------------------- */
+
+#define AI_LOG_PATH "ML/logs/unified_log.txt"
+
+static void ai_lut_log(void)
+{
+    int light = ai_light_level();
+    const char * scene = ai_scene();
+    int iso = raw2iso(lens_info.raw_iso);
+    int shutter_ms = raw2shutter_ms(lens_info.raw_shutter);
+    int ts = get_seconds_clock();
+
+    int wr = 100, wg = 100, wbb = 100;
+    if (lens_info.wb_mode == WB_CUSTOM)
+    {
+        wr  = (int) lens_info.WBGain_R;
+        wg  = (int) lens_info.WBGain_G;
+        wbb = (int) lens_info.WBGain_B;
+    }
+
+    FILE * f = FIO_CreateFileOrAppend(AI_LOG_PATH);
+    if (!f) return;
+
+    char line[256];
+    snprintf(line, sizeof(line), "Timestamp=%d\nHist=", ts);
+    FIO_WriteFile(f, line, strlen(line));
+
+    /* green-channel histogram bins, built into a bounded buffer */
+    uint32_t * h = histogram.is_rgb ? histogram.hist_g : histogram.hist;
+    char hbuf[1024];
+    int hn = 0;
+    for (int i = 0; i < HIST_WIDTH; i++)
+    {
+        char tmp[12];
+        snprintf(tmp, sizeof(tmp), i ? ",%u" : "%u", (unsigned) h[i]);
+        int tl = strlen(tmp);
+        if (hn + tl < (int) sizeof(hbuf) - 1)
+        {
+            memcpy(hbuf + hn, tmp, tl);
+            hn += tl;
+        }
+    }
+    if (hn > 0) FIO_WriteFile(f, hbuf, hn);
+
+    snprintf(line, sizeof(line),
+        "\nScene=%s\nLightLevel=%d\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\n---\n",
+        scene, light, shutter_ms, iso, wr, wg, wbb);
+    FIO_WriteFile(f, line, strlen(line));
+
+    FIO_CloseFile(f);
+}
+
 #endif /* _ai_lut_h_ */
