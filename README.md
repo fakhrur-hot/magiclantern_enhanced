@@ -1,4 +1,4 @@
-# AI-Assisted Exposure and Color for Magic Lantern (EOS 6D)
+# AI-Assisted Exposure and Color for Magic Lantern
 
 A Magic Lantern firmware extension that makes ML's **own** exposure and color
 controls smarter, driven by a compact lookup table learned from your own
@@ -6,8 +6,9 @@ shooting. It improves ETTR, ISO, white balance, ALO/HTP and per-lens picture
 tuning — with a **single source of adjustment per feature**, all through ML's
 existing menu.
 
-Built for the EOS 6D's DIGIC 5+ **ARM Cortex-R4**: no FPU, no GPU, no on-camera
-ML inference. All on-camera logic is **integer-only C** inside the ETTR module.
+Built for the DIGIC-era **ARM cores** in Magic Lantern cameras: no FPU, no GPU,
+no on-camera ML inference. It supports everything original Magic Lantern
+supports. All on-camera logic is **integer-only C** inside the ETTR module.
 The learned model is compressed into a small `unified.tbl` on the SD card; the
 firmware only does a table lookup and integer arithmetic. Model training happens
 offline and is not part of the on-camera code.

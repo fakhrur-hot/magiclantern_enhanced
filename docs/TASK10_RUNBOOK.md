@@ -1,7 +1,7 @@
 # Task 10 -- Integration Validation Runbook
 
 Step-by-step on-camera validation for the AI-LUT pipeline (REQ-006, REQ-007).
-This requires **hardware in the loop** (EOS 6D + SD card + shutter releases) and
+This requires **hardware in the loop** (camera + SD card + shutter releases) and
 cannot be run in CI. Use a **spare** SD card first.
 
 Companion tools:

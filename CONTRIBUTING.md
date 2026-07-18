@@ -10,7 +10,7 @@ Thanks for your interest in improving this project.
 
 ## On-Camera Lua Rules (non-negotiable)
 
-The EOS 6D DIGIC 5+ ARM Cortex-R4 has **no FPU**. On-camera Lua must be
+The DIGIC-era ARM cores in ML cameras have **no FPU**. On-camera Lua must be
 integer-only:
 
 - No floating-point constants (e.g. `0.9`).

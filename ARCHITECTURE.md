@@ -1,7 +1,7 @@
 # Architecture
 
-Data flow for the AI-assisted exposure/color pipeline on Magic Lantern (EOS 6D,
-DIGIC 5+ ARM Cortex-R4 — no FPU, no GPU, integer-only on camera).
+Data flow for the AI-assisted exposure/color pipeline on Magic Lantern
+(DIGIC-era ARM cores — no FPU, no GPU, integer-only on camera).
 
 ## Overview
 
@@ -29,7 +29,7 @@ Lantern's own controls and surfaced in its menu.
 ## Data flow
 
 ```
-+-- CAMERA (EOS 6D, ettr.mo) ---------------------------------------+
++-- CAMERA (ettr.mo) ------------------------------------------------+
 |  half-press:                                                      |
 |    log sensor stats  -> A:/ML/logs/unified_log.txt                |
 |    read unified.tbl  -> integer nearest-neighbour lookup          |

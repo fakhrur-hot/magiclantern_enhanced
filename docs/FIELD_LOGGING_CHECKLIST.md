@@ -1,6 +1,6 @@
 # Field Logging Checklist
 
-For collecting clean training data on the EOS 6D. Logging is done **in the
+For collecting clean training data in the field. Logging is done **in the
 firmware** (the ETTR module) -- ML Lua has no histogram access, so the old Lua
 logger was retired. Each **half-press** appends one record to
 `ML/logs/unified_log.txt`, controlled by the **AI Data Logging** menu toggle
@@ -22,7 +22,7 @@ is taken yet — so logging never interferes with capture.
       **Auto ISO Optimizer = OFF** (keep **AI Data Logging = ON**). Logging is
       independent of the optimizer, so this logs the camera's *native* metering,
       not values the AI already changed (avoids feedback bias).
-- [ ] **Be in LiveView** while half-pressing — on the 6D the histogram is only
+- [ ] **Be in LiveView** while half-pressing — the histogram is only
       populated in LV. OVF half-press → `HIST_NIL` / useless `LightLevel=128`.
 - [ ] Shoot RAW (CR2) if you also want to validate results later with exiftool.
 

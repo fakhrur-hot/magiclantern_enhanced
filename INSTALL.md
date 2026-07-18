@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-- Canon EOS 6D (or other supported model) running Magic Lantern
+- A Canon camera supported by Magic Lantern, running Magic Lantern
 - An SD card configured for Magic Lantern
 - `exiftool` for CR2 metadata validation (see `docs/VALIDATION.md`)
 
