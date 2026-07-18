@@ -68,6 +68,20 @@ scripts to debug.
 - If the ML overlays flicker, make sure you are on a current build of this
   fork's `ettr.mo` — older builds redrew the GUI every poll while logging.
 
+## Camera hangs at boot (stuck after sensor cleaning, battery pull needed)
+
+**Cause:** `autoexec.bin` and `ML/modules/<camera>.sym` are a **matched pair** —
+the sym file maps module imports to that exact core build's addresses. Updating
+one without the other sends module relocations to garbage addresses and the
+camera hard-hangs at module load (too early for a crash log).
+
+- Always copy **both** files when updating the core; the release zip contains
+  the matching set. Extracting the whole zip is always safe.
+- To recover: pull the battery, put the card in a reader, restore the previous
+  `autoexec.bin` **and** its matching sym together.
+- Swapping only a module (`ettr.mo`) is safe — modules resolve by name against
+  whatever core the card carries.
+
 ## Camera reboots / crashes at ML load
 
 - Any file ML slurps in one read must stay small: `unified.tbl` /
