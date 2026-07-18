@@ -37,11 +37,14 @@ static int ai_alo_from_kw(const char * kw)
     return ALO_STD;                                   /* 0: neutral */
 }
 
-/* ISO -> ML raw iso: 100->72, 200->80, 400->88, 800->96, 1600->104, 3200->112 */
+/* ISO -> ML raw iso, rounded to the NEAREST full stop (not up):
+ * 100->72, 200->80, ... 25600->136. e.g. 2000 -> 1600 (not 3200);
+ * midpoint rule iso*2 >= v*3 goes to the higher stop. Integer-only. */
 static int ai_iso_to_raw(int iso)
 {
     int stops = 0, v = 100;
-    while (v < iso && stops < 10) { v *= 2; stops++; }
+    while (v * 2 <= iso && stops < 8) { v *= 2; stops++; }
+    if (stops < 8 && iso * 2 >= v * 3) stops++;
     return 72 + 8 * stops;
 }
 
@@ -105,14 +108,26 @@ static int ai_lut_load(void)
             int r, g, b;
             if (nf >= 7 && ai_parse_wb(f[6], &r, &g, &b))
             {
-                struct ai_lut_row * row = &ai_rows[ai_nrows];
-                snprintf(row->scene, sizeof(row->scene), "%s", f[0]);
-                row->light = atoi(f[1]);
-                row->alo   = ai_alo_from_kw(f[3]);
-                row->htp   = streq(f[4], "priority_on") ? 1 : 0;
-                row->iso   = atoi(f[5]);
-                row->wb_r = r; row->wb_g = g; row->wb_b = b;
-                ai_nrows++;
+                int light = atoi(f[1]);
+                int iso   = atoi(f[5]);
+                /* reject rows with insane values (atoi returns 0 on garbage;
+                 * WB gains of 0 must never reach lens_set_custom_wb_gains) */
+                int sane = (light >= 0 && light <= 255)
+                        && (iso >= 50 && iso <= 25600)
+                        && (r >= 10 && r <= 400)
+                        && (g >= 10 && g <= 400)
+                        && (b >= 10 && b <= 400);
+                if (sane)
+                {
+                    struct ai_lut_row * row = &ai_rows[ai_nrows];
+                    snprintf(row->scene, sizeof(row->scene), "%s", f[0]);
+                    row->light = light;
+                    row->alo   = ai_alo_from_kw(f[3]);
+                    row->htp   = streq(f[4], "priority_on") ? 1 : 0;
+                    row->iso   = iso;
+                    row->wb_r = r; row->wb_g = g; row->wb_b = b;
+                    ai_nrows++;
+                }
             }
         }
 
@@ -127,6 +142,24 @@ static int ai_lut_load(void)
  * (true exposure), 0 = LiveView display histogram (preview brightness). */
 static int ai_light_src = 0;
 
+/* Extra raw stats from the last ai_light_level() call (0..255, -1 = n/a):
+ * green median + 99th percentile (clip proximity). Free -- same metering pass. */
+static int ai_raw_med = -1;
+static int ai_raw_p99 = -1;
+
+/* Normalize a raw sensor level to 0..255 using black/white points. -1 on n/a. */
+static int ai_raw_to_255(int rawv)
+{
+    if (rawv < 0) return -1;
+    int black = raw_info.black_level;
+    int span = raw_info.white_level - black;
+    if (span <= 0) return -1;
+    int v = rawv - black;
+    if (v < 0) v = 0;
+    int light = v * 255 / span;
+    return (light > 255) ? 255 : light;
+}
+
 /* 90th-percentile green light level, 0..255.
  *
  * Prefer the RAW histogram (raw_hist_get_percentile_levels, GREEN + DARK_ONLY):
@@ -134,30 +167,26 @@ static int ai_light_src = 0;
  * post-gamma and ExpSim-brightened (measured uncorrelated with real exposure,
  * Spearman ~0). Needs raw LV active -- requested in the polling CBR while
  * logging is on. Falls back to the display histogram when raw is unavailable.
+ * One metering pass also yields the median and P99 (stored in ai_raw_med/p99).
  */
 static int ai_light_level(void)
 {
-    int pct = 900;                  /* 90.0th percentile (x10) */
-    int rawv = -1;
-    raw_hist_get_percentile_levels(&pct, &rawv, 1,
+    int pcts[3] = {990, 900, 500};  /* x10: P99, P90, P50 (ETTR convention) */
+    int out[3]  = {-1, -1, -1};
+    raw_hist_get_percentile_levels(pcts, out, 3,
         GRAY_PROJECTION_GREEN | GRAY_PROJECTION_DARK_ONLY, 4 /* subsampled */);
-    if (rawv >= 0)
+    int light = ai_raw_to_255(out[1]);
+    if (light >= 0)
     {
-        int black = raw_info.black_level;
-        int span = raw_info.white_level - black;
-        if (span > 0)
-        {
-            int v = rawv - black;
-            if (v < 0) v = 0;
-            int light = v * 255 / span;
-            if (light > 255) light = 255;
-            ai_light_src = 1;
-            return light;
-        }
+        ai_raw_p99 = ai_raw_to_255(out[0]);
+        ai_raw_med = ai_raw_to_255(out[2]);
+        ai_light_src = 1;
+        return light;
     }
 
     /* Fallback: LiveView display histogram (brightness proxy, not exposure). */
     ai_light_src = 0;
+    ai_raw_med = ai_raw_p99 = -1;
     uint32_t * h = histogram.is_rgb ? histogram.hist_g : histogram.hist;
     uint32_t total = 0;
     for (int i = 0; i < HIST_WIDTH; i++) total += h[i];
@@ -170,6 +199,22 @@ static int ai_light_level(void)
         if (cum >= thr) return (i * 255) / (HIST_WIDTH - 1);
     }
     return 255;
+}
+
+/* Raw R/B channel medians (0..255; -1 = n/a). Logged so offline training can
+ * LEARN white balance and scene from channel ratios (R/G, B/G) instead of the
+ * hardcoded WB table -- the data the WB/scene collection sessions need.
+ * Only called from the logging path (2 extra subsampled passes). */
+static void ai_sample_rb(int * r_med, int * b_med)
+{
+    int pct = 500, rv = -1;
+    raw_hist_get_percentile_levels(&pct, &rv, 1,
+        GRAY_PROJECTION_RED | GRAY_PROJECTION_DARK_ONLY, 4);
+    *r_med = ai_raw_to_255(rv);
+    pct = 500; rv = -1;
+    raw_hist_get_percentile_levels(&pct, &rv, 1,
+        GRAY_PROJECTION_BLUE | GRAY_PROJECTION_DARK_ONLY, 4);
+    *b_med = ai_raw_to_255(rv);
 }
 
 /* Best-effort scene from the camera's WB Kelvin; "unknown" otherwise (we then
@@ -239,9 +284,21 @@ static int ai_lut_apply(void)
 
 #define AI_LOG_PATH "ML/logs/unified_log.txt"
 
-static void ai_lut_log(void)
+/* Append one record. Returns 1 if logged, 0 if no light source was ready yet
+ * (caller retries next poll -- raw metering and the display histogram can both
+ * lag the half-press rising edge). */
+static int ai_lut_log(void)
 {
     int light = ai_light_level();
+
+    /* display-histogram total (fallback source readiness + optional Hist dump) */
+    uint32_t * h = histogram.is_rgb ? histogram.hist_g : histogram.hist;
+    uint32_t disp_total = 0;
+    for (int i = 0; i < HIST_WIDTH; i++) disp_total += h[i];
+
+    /* nothing metered yet -> don't write a junk record */
+    if (!ai_light_src && disp_total == 0) return 0;
+
     const char * scene = ai_scene();
     /* In Auto ISO, raw_iso is 0; use the resolved auto value so ISO (the
      * training target) is real, not 0. */
@@ -250,6 +307,10 @@ static void ai_lut_log(void)
     int iso = raw2iso(riso);
     int shutter_ms = raw2shutter_ms(lens_info.raw_shutter);
     int ts = get_seconds_clock();
+
+    /* raw R/B medians for offline WB/scene learning (raw path only) */
+    int r_med = -1, b_med = -1;
+    if (ai_light_src) ai_sample_rb(&r_med, &b_med);
 
     int wr = 100, wg = 100, wbb = 100;
     if (lens_info.wb_mode == WB_CUSTOM)
@@ -265,39 +326,50 @@ static void ai_lut_log(void)
     int fnum = card ? card->file_number : -1;
 
     FILE * f = FIO_CreateFileOrAppend(AI_LOG_PATH);
-    if (!f) return;
+    if (!f) return 0;
 
-    char line[256];
+    char line[320];
     snprintf(line, sizeof(line), "Timestamp=%d\nHist=", ts);
     FIO_WriteFile(f, line, strlen(line));
 
-    /* green-channel histogram bins, built into a bounded buffer */
-    uint32_t * h = histogram.is_rgb ? histogram.hist_g : histogram.hist;
-    char hbuf[1024];
+    /* display-histogram bins (labeled by HistSrc=disp; LightLevel itself comes
+     * from LightSrc). Static: keep 1 KB off the shoot-task stack. */
+    static char hbuf[1024];
     int hn = 0;
-    for (int i = 0; i < HIST_WIDTH; i++)
+    if (disp_total > 0)
     {
-        char tmp[12];
-        /* ML's snprintf has no %u; use %d (bin counts fit in int). */
-        snprintf(tmp, sizeof(tmp), i ? ",%d" : "%d", (int) h[i]);
-        int tl = strlen(tmp);
-        if (hn + tl < (int) sizeof(hbuf) - 1)
+        for (int i = 0; i < HIST_WIDTH; i++)
         {
-            memcpy(hbuf + hn, tmp, tl);
-            hn += tl;
+            char tmp[12];
+            /* ML's snprintf has no %u; use %d (bin counts fit in int). */
+            snprintf(tmp, sizeof(tmp), i ? ",%d" : "%d", (int) h[i]);
+            int tl = strlen(tmp);
+            if (hn + tl < (int) sizeof(hbuf) - 1)
+            {
+                memcpy(hbuf + hn, tmp, tl);
+                hn += tl;
+            }
         }
     }
     if (hn > 0) FIO_WriteFile(f, hbuf, hn);
+    else        FIO_WriteFile(f, "nil", 3);
 
     /* FileNum = current camera file number. The CR2 produced by fully pressing
      * after this half-press is FileNum+1, so validation can pair each log record
-     * to its exact RAW (see tools/validate_exposure.py). */
+     * to its exact RAW (see tools/validate_exposure.py).
+     * RawMed/RawP99 = green median / clip proximity; RawR/RawB = channel medians
+     * (all 0..255, -1 = n/a) -- features for offline WB/scene/ISO learning. */
     snprintf(line, sizeof(line),
-        "\nScene=%s\nLightLevel=%d\nLightSrc=%s\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
-        scene, light, (ai_light_src ? "raw" : "disp"), shutter_ms, iso, wr, wg, wbb, fnum);
+        "\nHistSrc=disp\nScene=%s\nLightLevel=%d\nLightSrc=%s"
+        "\nRawMed=%d\nRawP99=%d\nRawR=%d\nRawB=%d"
+        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
+        scene, light, (ai_light_src ? "raw" : "disp"),
+        ai_raw_med, ai_raw_p99, r_med, b_med,
+        shutter_ms, iso, wr, wg, wbb, fnum);
     FIO_WriteFile(f, line, strlen(line));
 
     FIO_CloseFile(f);
+    return 1;
 }
 
 #endif /* _ai_lut_h_ */

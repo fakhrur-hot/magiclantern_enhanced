@@ -1635,8 +1635,13 @@ static void auto_iso_optimizer_step()
         /* AI-LUT (single source of adjustment): apply the learned per-scene
          * HTP/ALO/WB via ML's OWN setters and get the learned starting ISO.
          * Falls back to the previous hardcoded HTP+ALO when no LUT row applies,
-         * so nothing regresses. The metered ETTR still owns the exposure push. */
+         * so nothing regresses. The metered ETTR still owns the exposure push.
+         * Wrap with raw_lv_request so the lookup uses the RAW light level even
+         * when AI Data Logging (which otherwise holds raw LV) is off. */
+        int ai_raw_wrap = lv && ((void*)&raw_lv_request != (void*)&ret_0);
+        if (ai_raw_wrap) raw_lv_request();
         int ai_iso = ai_lut_apply();
+        if (ai_raw_wrap) raw_lv_release();
         if (ai_iso <= 0)
         {
             /* No LUT / no match: enable HTP + ALO as before. HTP also raises the
@@ -1693,11 +1698,11 @@ static unsigned int auto_ettr_polling_cbr()
     else if (ai_data_logging && !ai_logged_press)
     {
         int riso = lens_info.raw_iso ? lens_info.raw_iso : lens_info.raw_iso_auto;
-        if (histogram.total_px > 0 && riso > 0)
-        {
-            ai_lut_log();
+        /* ai_lut_log() returns 0 until a light source (raw metering preferred,
+         * display histogram fallback) is ready -- retry next poll. This no
+         * longer requires the ML histogram overlay to be enabled. */
+        if (riso > 0 && ai_lut_log())
             ai_logged_press = 1;
-        }
     }
 
     if (lv && NOT_RECORDING && ((void*)&raw_lv_request != (void*)&ret_0))
