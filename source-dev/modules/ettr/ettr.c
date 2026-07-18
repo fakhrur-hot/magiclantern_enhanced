@@ -58,6 +58,27 @@ static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 0);
  * JPEG-only (picstyle does not touch RAW). Default OFF. */
 static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 0);
 
+/* Which shooting modes the whole AI system acts in.
+ *   0 = P, M        (default)
+ *   1 = P, M, Av, Tv
+ * In every covered mode the AI never touches the parameter the user owns:
+ *   Av -> aperture is the user's (AI adjusts ISO/shutter via Canon Auto ISO)
+ *   Tv -> shutter is the user's (AI adjusts ISO/aperture via Canon Auto ISO)
+ *   M  -> AI (metered ETTR) may drive ISO+shutter fully
+ *   P  -> Canon owns shutter+aperture; AI adds HTP/ALO + learned ISO floor
+ * ETTR's metered highlight push runs only in M (ML limitation); Av/Tv/P use
+ * Canon's native Auto ISO, which by construction never touches the locked one. */
+static CONFIG_INT("auto.ettr.ai.modes", ai_modes, 0);
+
+/* True if the AI system should act in the current shooting mode. */
+static int ai_mode_covered(void)
+{
+    int m = shooting_mode;
+    if (m == SHOOTMODE_M || m == SHOOTMODE_P) return 1;
+    if (ai_modes == 1 && (m == SHOOTMODE_AV || m == SHOOTMODE_TV)) return 1;
+    return 0;
+}
+
 static int debug_info = 0;
 static int show_metered_areas = 0;
 
@@ -1644,8 +1665,7 @@ static void auto_iso_optimizer_step()
 
     static int was_auto_iso = 0;
     int is_auto_iso = (lens_info.raw_iso == 0);
-    int mode_ok = (shooting_mode == SHOOTMODE_P  || shooting_mode == SHOOTMODE_TV ||
-                   shooting_mode == SHOOTMODE_AV || shooting_mode == SHOOTMODE_M);
+    int mode_ok = ai_mode_covered();
 
     if (is_auto_iso && mode_ok && !was_auto_iso)
     {
@@ -1694,11 +1714,14 @@ static unsigned int auto_ettr_polling_cbr()
 {
     auto_iso_optimizer_step();
 
+    /* The whole AI system only acts in the user-selected shooting modes. */
+    int ai_on = ai_mode_covered();
+
     /* Keep raw LV available while logging OR white-balancing so the RAW
      * histogram (true exposure / per-channel white point) is readable.
      * Reference-counted; balanced request/release. */
     static int ai_raw_req = 0;
-    int ai_want_raw = (ai_data_logging || ai_white_balance) && lv
+    int ai_want_raw = ai_on && (ai_data_logging || ai_white_balance) && lv
                       && ((void*)&raw_lv_request != (void*)&ret_0);
     if (ai_want_raw && !ai_raw_req) { raw_lv_request(); ai_raw_req = 1; }
     else if (!ai_want_raw && ai_raw_req) { raw_lv_release(); ai_raw_req = 0; }
@@ -1706,16 +1729,16 @@ static unsigned int auto_ettr_polling_cbr()
     /* Item 1: white-point WB, once per half-press (retry until raw is ready). */
     static int ai_wb_done = 0;
     if (!get_halfshutter_pressed()) ai_wb_done = 0;
-    else if (ai_white_balance && !ai_wb_done && ai_white_point_wb()) ai_wb_done = 1;
+    else if (ai_on && ai_white_balance && !ai_wb_done && ai_white_point_wb()) ai_wb_done = 1;
 
     /* Item 2: per-lens picture tune, re-applied when the lens changes. */
     static int ai_last_lens = -1;
-    if (ai_picture_tune_en && (int) lens_info.lens_id != ai_last_lens)
+    if (ai_on && ai_picture_tune_en && (int) lens_info.lens_id != ai_last_lens)
     {
         ai_picture_tune();
         ai_last_lens = (int) lens_info.lens_id;
     }
-    else if (!ai_picture_tune_en)
+    else if (!ai_picture_tune_en || !ai_on)
     {
         ai_last_lens = -1;   /* re-apply after the user toggles it back on */
     }
@@ -1730,7 +1753,7 @@ static unsigned int auto_ettr_polling_cbr()
     {
         ai_logged_press = 0;
     }
-    else if (ai_data_logging && !ai_logged_press)
+    else if (ai_on && ai_data_logging && !ai_logged_press)
     {
         int riso = lens_info.raw_iso ? lens_info.raw_iso : lens_info.raw_iso_auto;
         /* ai_lut_log() returns 0 until a light source (raw metering preferred,
@@ -1868,11 +1891,19 @@ static struct menu_entry ettr_menu[] =
                 .advanced = 1,
             },
             {
+                .name = "AI Modes",
+                .priv = &ai_modes,
+                .max = 1,
+                .choices = CHOICES("P, M", "P, M, Av, Tv"),
+                .help  = "Which shooting modes the whole AI system acts in.",
+                .help2 = "Av keeps your aperture; Tv keeps your shutter; M full control.",
+            },
+            {
                 .name = "Auto ISO Optimizer",
                 .priv = &auto_iso_optimizer,
                 .max = 1,
                 .help  = "ISO=Auto+HTP+ALO. M: ETTR (half-shutter). P/Av/Tv: Canon AutoISO.",
-                .help2 = "Floor ISO 200 w/HTP, 100 w/o. ETTR only runs in M mode.",
+                .help2 = "Floor ISO 200 w/HTP, 100 w/o. ETTR push only in M mode.",
             },
             {
                 .name = "AI Data Logging",
@@ -1945,6 +1976,7 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(ai_data_logging)
     MODULE_CONFIG(ai_white_balance)
     MODULE_CONFIG(ai_picture_tune_en)
+    MODULE_CONFIG(ai_modes)
     MODULE_CONFIG(auto_ettr_trigger)
     MODULE_CONFIG(auto_ettr_ignore)
     MODULE_CONFIG(auto_ettr_target_level)
