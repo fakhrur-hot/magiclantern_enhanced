@@ -51,8 +51,8 @@ static CONFIG_INT("auto.ettr.iso.optimizer", auto_iso_optimizer, 1);
 static CONFIG_INT("auto.ettr.ai.logging", ai_data_logging, 1);
 
 /* AI white balance: neutralize WB from the brightest highlights (white-point).
- * Affects RAW metadata + JPEG. Default ON. */
-static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 1);
+ * Affects RAW metadata + JPEG. Default OFF. */
+static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 0);
 
 /* AI picture tune: per-lens Canon contrast/saturation from lens_tune.tbl.
  * JPEG-only (picstyle does not touch RAW). Default OFF. */

@@ -317,12 +317,15 @@ static int ai_white_point_wb(void)
     if (r_hi < 1 || g_hi < 1 || b_hi < 1) return 0;
     if (span <= 0 || g_hi < span / 8) return 0;       /* no real highlights */
 
-    /* gains (1024 = neutral): scale R and B so they match G at the white point */
-    int r_gain = AI_WB_NEUTRAL * g_hi / r_hi;
-    int b_gain = AI_WB_NEUTRAL * g_hi / b_hi;
-    /* clamp to +/-1 stop so an odd scene can't throw a wild correction */
-    r_gain = COERCE(r_gain, AI_WB_NEUTRAL / 2, AI_WB_NEUTRAL * 2);
-    b_gain = COERCE(b_gain, AI_WB_NEUTRAL / 2, AI_WB_NEUTRAL * 2);
+    /* Canon WBGain is AsShotNeutral-style (1024 = neutral): gain = raw_channel /
+     * raw_green at the white point, and the pipeline DIVIDES by it. So R and B
+     * gains are the channel-to-green RATIO (typically < 1024 -- daylight R~0.47,
+     * B~0.62). A neutral highlight then renders R=G=B. (Getting this inverted
+     * suppressed R/B and gave a green cast.) Clamp to a sane WB range. */
+    int r_gain = AI_WB_NEUTRAL * r_hi / g_hi;
+    int b_gain = AI_WB_NEUTRAL * b_hi / g_hi;
+    r_gain = COERCE(r_gain, 256, 1536);   /* ~0.25x .. 1.5x */
+    b_gain = COERCE(b_gain, 256, 1536);
 
     lens_set_custom_wb_gains(r_gain, AI_WB_NEUTRAL, b_gain);
     return 1;
