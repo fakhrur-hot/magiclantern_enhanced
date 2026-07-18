@@ -59,7 +59,11 @@ CFLAGS += \
     -DVERSION=\"$(VERSION)\"
 
 BUILD_DATE = $(call eval_once,BUILD_DATE,$(shell LC_TIME=EN date +'%Y-%m-%d'))
-VERSION = $(BUILD_DATE).$(MODEL).$(FW_VERSION)
+# AI fork marker: every build's version carries an "ai" tag so this firmware is
+# unmistakably distinct from stock Magic Lantern (shows in ML's version screen,
+# version.bin, and the versioned zip name), e.g. 2026-07-18.6D.116.ai
+ML_AI_TAG = ai
+VERSION = $(BUILD_DATE).$(MODEL).$(FW_VERSION).$(ML_AI_TAG)
 
 # Location of files to turn into zip:
 ZIP_DIR = build/zip
