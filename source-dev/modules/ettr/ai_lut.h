@@ -123,15 +123,45 @@ static int ai_lut_load(void)
     return ai_nrows;
 }
 
-/* Integer 90th-percentile bin of the green channel, scaled to 0..255
- * (REQ-001 definition). 128 fallback when the histogram has no data. */
+/* Light-level source of the last ai_light_level() call: 1 = RAW histogram
+ * (true exposure), 0 = LiveView display histogram (preview brightness). */
+static int ai_light_src = 0;
+
+/* 90th-percentile green light level, 0..255.
+ *
+ * Prefer the RAW histogram (raw_hist_get_percentile_levels, GREEN + DARK_ONLY):
+ * it reflects true sensor exposure, unlike the display histogram which is
+ * post-gamma and ExpSim-brightened (measured uncorrelated with real exposure,
+ * Spearman ~0). Needs raw LV active -- requested in the polling CBR while
+ * logging is on. Falls back to the display histogram when raw is unavailable.
+ */
 static int ai_light_level(void)
 {
+    int pct = 900;                  /* 90.0th percentile (x10) */
+    int rawv = -1;
+    raw_hist_get_percentile_levels(&pct, &rawv, 1,
+        GRAY_PROJECTION_GREEN | GRAY_PROJECTION_DARK_ONLY, 4 /* subsampled */);
+    if (rawv >= 0)
+    {
+        int black = raw_info.black_level;
+        int span = raw_info.white_level - black;
+        if (span > 0)
+        {
+            int v = rawv - black;
+            if (v < 0) v = 0;
+            int light = v * 255 / span;
+            if (light > 255) light = 255;
+            ai_light_src = 1;
+            return light;
+        }
+    }
+
+    /* Fallback: LiveView display histogram (brightness proxy, not exposure). */
+    ai_light_src = 0;
     uint32_t * h = histogram.is_rgb ? histogram.hist_g : histogram.hist;
     uint32_t total = 0;
     for (int i = 0; i < HIST_WIDTH; i++) total += h[i];
     if (total == 0) return 128;
-
     uint32_t thr = total * 9 / 10;
     uint32_t cum = 0;
     for (int i = 0; i < HIST_WIDTH; i++)
@@ -263,8 +293,8 @@ static void ai_lut_log(void)
      * after this half-press is FileNum+1, so validation can pair each log record
      * to its exact RAW (see tools/validate_exposure.py). */
     snprintf(line, sizeof(line),
-        "\nScene=%s\nLightLevel=%d\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
-        scene, light, shutter_ms, iso, wr, wg, wbb, fnum);
+        "\nScene=%s\nLightLevel=%d\nLightSrc=%s\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
+        scene, light, (ai_light_src ? "raw" : "disp"), shutter_ms, iso, wr, wg, wbb, fnum);
     FIO_WriteFile(f, line, strlen(line));
 
     FIO_CloseFile(f);

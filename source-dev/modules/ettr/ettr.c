@@ -1667,6 +1667,14 @@ static unsigned int auto_ettr_polling_cbr()
 {
     auto_iso_optimizer_step();
 
+    /* Keep raw LV available while logging so ai_light_level() can read the RAW
+     * histogram (true exposure) instead of the ExpSim-brightened display one.
+     * Reference-counted; balanced request/release. */
+    static int ai_raw_req = 0;
+    int ai_want_raw = ai_data_logging && lv && ((void*)&raw_lv_request != (void*)&ret_0);
+    if (ai_want_raw && !ai_raw_req) { raw_lv_request(); ai_raw_req = 1; }
+    else if (!ai_want_raw && ai_raw_req) { raw_lv_release(); ai_raw_req = 0; }
+
     /* AI data logging: log ONCE per half-press, but only once the histogram is
      * built AND ISO is resolved -- both lag the rising edge during metering, so
      * logging on the edge caught inconsistent snapshots (ISO=0 or LightLevel=128
