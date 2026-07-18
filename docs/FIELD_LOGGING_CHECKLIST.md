@@ -62,9 +62,9 @@ Cover all four LUT scenes across sessions:
 
 ## Train + deploy
 
-- [ ] Run `colab/lut_training.ipynb` (or `lut_training_multi_param.py`) → new
-      `unified.tbl`. Review the header (`training_samples`, `low_sample_warning`,
-      `wb_fallback_scenes`) and `training_audit.log`.
+- [ ] Produce a new `unified.tbl` from the log with the offline training. Review
+      the header (`training_samples`, `low_sample_warning`, `wb_fallback_scenes`)
+      and `training_audit.log`.
 - [ ] Copy `unified.tbl` to `A:/ML/models/` (hot-swap; no reflash).
 - [ ] **Turn the AI back ON** (Auto ISO Optimizer) to shoot with the learned LUT.
 - [ ] Validate applied results with exiftool per `docs/VALIDATION.md`.

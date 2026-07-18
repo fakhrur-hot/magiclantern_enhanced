@@ -1,75 +1,94 @@
-# AI-Assisted Exposure and Color for Magic Lantern
+# AI-Assisted Exposure and Color for Magic Lantern (EOS 6D)
 
-An end-to-end AI-assisted exposure and color control pipeline for Canon DSLRs
-running Magic Lantern. It combines on-camera Lua scripting, offline model
-training in Google Colab, a unified LUT format, and CI/CD automation to deliver
-optimized ETTR, ALO, HTP, ISO, and WB decisions before each CR2 RAW capture.
+A Magic Lantern firmware extension that makes ML's **own** exposure and color
+controls smarter, driven by a compact lookup table learned from your own
+shooting. It improves ETTR, ISO, white balance, ALO/HTP and per-lens picture
+tuning — with a **single source of adjustment per feature**, all through ML's
+existing menu.
 
-The system is built around the constraints of the EOS 6D's DIGIC 5+ ARM
-Cortex-R4 processor: **no on-camera ML inference, integer-only math, small
-memory footprint, and SD card I/O for model storage.** All intelligence is
-computed offline and compressed into a compact `unified.tbl` file. On-camera
-Lua scripts perform only a table lookup and integer arithmetic -- no floating
-point, no network, no GPU.
+Built for the EOS 6D's DIGIC 5+ **ARM Cortex-R4**: no FPU, no GPU, no on-camera
+ML inference. All on-camera logic is **integer-only C** inside the ETTR module.
+The learned model is compressed into a small `unified.tbl` on the SD card; the
+firmware only does a table lookup and integer arithmetic. Model training happens
+offline and is not part of the on-camera code.
 
-## Repository Structure
+## Features (Expo → Auto ETTR)
 
-| Directory | Contents |
+- **Auto ISO Optimizer** — when Canon Auto ISO is engaged, the AI applies the
+  learned ISO floor + HTP/ALO and (in **M**) hands the exposure to the real
+  metered ETTR. Exposure target defaults to −0.5 EV (highlights just under clip).
+- **AI Data Logging** — appends sensor stats to `A:/ML/logs/unified_log.txt` on
+  each half-press (RAW-histogram light level, per-channel percentiles,
+  ISO/shutter/WB, file number) for offline training.
+- **AI White Balance** — confidence-clipped bright-pixels auto-WB from the RAW
+  channels; neutralizes real white highlights without forcing dim ones. Affects
+  RAW (as-shot) + JPEG.
+- **AI Picture Tune** — per-lens Canon contrast/saturation from
+  `ML/models/lens_tune.tbl`, for a uniform look across lenses. JPEG only.
+- **AI Modes** — restricts the whole system to **P, M** or **P, M, Av, Tv**. In
+  Av your aperture is never overwritten; in Tv your shutter is never overwritten;
+  in M the AI has full control.
+
+## How it works
+
+```
+camera (ettr.mo): half-press -> log sensor stats  -> unified_log.txt
+                                read unified.tbl   -> drive ML's ETTR/ISO/WB/ALO/HTP
+        |  export unified_log.txt
+        v
+offline training (internal)   -> new unified.tbl
+        |  copy to A:/ML/models/  (hot-swap; next half-press uses it)
+        v
+back on camera -> new logs -> repeat
+```
+
+The LUT hot-swaps: drop a new `unified.tbl` onto the card and it takes effect on
+the very next half-press — no reflash, no reboot.
+
+## Install
+
+- Grab a release (or a locally built `ai-magiclantern-<camera>-full.zip`) and
+  extract it onto the SD card; the `ML/` tree contains the module + `unified.tbl`
+  + `lens_tune.tbl` and creates `ML/logs/` for the log.
+- Already running Magic Lantern? Copy the AI-integrated `ML/modules/ettr.mo` and
+  `ML/models/*.tbl` onto the card. See [INSTALL.md](INSTALL.md).
+
+## Repository structure
+
+| Path | Contents |
 |---|---|
-| `lua_scripts/` | On-camera Lua: logger and decision engine |
-| `colab/` | Offline training notebook and standalone training script |
-| `models/` | `unified.tbl` seed LUT and derived models |
-| `logs/` | Sample logs (raw SD card logs are git-ignored) |
-| `docs/` | Validation, troubleshooting, CI/CD documentation |
-| `release_templates/` | Release notes templates |
-| `.github/workflows/` | CI/CD build and release workflows |
-
-## Quick Links
-
-- [INSTALL.md](INSTALL.md) -- installation and SD card setup
-- [ARCHITECTURE.md](ARCHITECTURE.md) -- full data flow and design
-- [CONTRIBUTING.md](CONTRIBUTING.md) -- contribution guidelines
-- [.kiro/specs/ai-lut-magic-lantern/](.kiro/specs/ai-lut-magic-lantern/) -- requirements, design, and task plan
-
-## Status
-
-Under active development on the `ai-lut-integration` branch. See the
-[task plan](.kiro/specs/ai-lut-magic-lantern/tasks.md) for progress.
+| `source-dev/` | Vendored Magic Lantern source; the AI lives in `modules/ettr/` (`ai_lut.h` + `ettr.c`) |
+| `models/` | `unified.tbl` (learned LUT) and `lens_tune.tbl` (per-lens picture tune) |
+| `tools/` | `validate_exposure.py`, `analyze_log.py`, `make_full_bundle.py` |
+| `docs/` | Validation, troubleshooting, CI/CD, field logging, ETTR-AI integration |
+| `.github/workflows/` | CI build + release |
+| `dist/` | Built installers (git-ignored) |
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) -- full data flow and invariants
-- [docs/VALIDATION.md](docs/VALIDATION.md) -- exiftool checks, match-rate metrics
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) -- common failures
-- [docs/CI_CD.md](docs/CI_CD.md) -- workflows, manual triggers, adding a camera
+- [INSTALL.md](INSTALL.md) — SD card setup
+- [ARCHITECTURE.md](ARCHITECTURE.md) — data flow and invariants
+- [docs/ETTR_AI_INTEGRATION.md](docs/ETTR_AI_INTEGRATION.md) — how the AI drives ML's ETTR
+- [docs/FIELD_LOGGING_CHECKLIST.md](docs/FIELD_LOGGING_CHECKLIST.md) — collecting training data
+- [docs/VALIDATION.md](docs/VALIDATION.md) · [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) · [docs/CI_CD.md](docs/CI_CD.md)
 
 ## Glossary
 
-- **ARM Cortex-R4** -- the CPU in the EOS 6D DIGIC 5+ processor. Real-time,
-  integer-optimized. Lua runs here with no GPU and no FPU.
-- **Integer-only math** -- all on-camera arithmetic uses whole numbers: no `/`
-  division with fractional results, no decimal constants. `math.floor` is used
-  exactly once (the histogram percentile).
-- **LUT (Lookup Table)** -- `unified.tbl`, a pipe-delimited text table mapping
-  Scene + LightLevel to camera decisions. Read by Lua; never executed as a model.
-- **ETTR (Expose To The Right)** -- shutter adjustment to push the histogram
-  right without clipping. Encoded as integer shutter denominators (50/100/200).
-- **ALO (Auto Lighting Optimizer)** -- Canon shadow-lift tone processing.
-  `shadow_boost` / `shadow_lift` / `neutral`. Phase 2 stub on camera.
-- **HTP (Highlight Tone Priority)** -- Canon highlight-protection tone feature.
-  `priority_on` / `priority_off`. Phase 2 stub on camera.
-- **90th-percentile bin** -- integer histogram statistic: the bin index where
-  cumulative pixel count first reaches 90% of the total. The "near-highlight"
-  ETTR signal; the shared definition of LightLevel (0-255).
-- **WB multipliers** -- integer sensor-gain ratios with `G=100` as the
-  reference. Applied directly via `set_wb(r,g,b)`; no Kelvin conversion on camera.
-- **Decision Tree** -- scikit-learn `DecisionTreeClassifier(max_depth=4)` trained
-  offline to predict ISO from LightLevel. Its output is baked into `unified.tbl`.
-- **Nearest-neighbor fallback** -- when no exact Scene+LightLevel row exists, the
-  engine picks the same-scene row with the smallest integer `abs` light-level
-  difference; then `unknown`; then safe defaults.
-- **Hot-swap** -- replacing `unified.tbl` on the SD card takes effect on the next
-  half-press, no reflash or reboot (the LUT is reloaded every half-press).
+- **ETTR (Expose To The Right)** — push highlights just below clipping for
+  maximum signal. The real metered ETTR owns the exposure push; the AI supplies
+  learned starting points (ISO/WB/ALO/HTP).
+- **unified.tbl** — the LUT: pipe-delimited `Scene|LightLevel|ETTR|ALO|HTP|ISO|WB`.
+  Read by the firmware; never executed as a model. Capped at ≤128 rows / <8 KB.
+- **LightLevel** — integer 0–255 from the 90th-percentile of the **RAW** green
+  histogram (true sensor exposure, not the ExpSim preview).
+- **ALO / HTP** — Canon Auto Lighting Optimizer / Highlight Tone Priority, driven
+  via ML's `set_alo` / `set_htp`.
+- **White-point WB** — bright-pixels + gray-world estimate, confidence-blended and
+  temporally damped, applied as custom WB gains (AsShotNeutral scale, 1024=neutral).
+- **Hot-swap** — replacing `unified.tbl` on the card takes effect on the next
+  half-press; no reflash or reboot.
+- **Single source of adjustment** — each feature (ETTR/ISO/WB/ALO/HTP) is driven
+  from exactly one place (the ETTR module) through ML's own controls.
 
 ## License
 

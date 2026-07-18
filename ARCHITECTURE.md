@@ -1,67 +1,75 @@
 # Architecture
 
-Full data flow for the AI-assisted exposure/color pipeline (REQ-006). The
-authoritative component-level design lives in
-[.kiro/specs/ai-lut-magic-lantern/design.md](.kiro/specs/ai-lut-magic-lantern/design.md);
-this document is the operational overview.
+Data flow for the AI-assisted exposure/color pipeline on Magic Lantern (EOS 6D,
+DIGIC 5+ ARM Cortex-R4 — no FPU, no GPU, integer-only on camera).
 
 ## Overview
 
-Four layers connected by a continuous improvement loop:
+Three layers connected by a continuous improvement loop. **All on-camera
+intelligence lives in one place — the firmware ETTR module (`ettr.mo`)** — so
+there is a single source of adjustment per feature, driven through Magic
+Lantern's own controls and surfaced in its menu.
 
-1. **Camera layer (EOS 6D)** -- integer-only Lua on the DIGIC 5+ ARM Cortex-R4
-   (no FPU, no GPU): `unified_logger.lua` (study mode) and `decision_engine.lua`
-   (applies decisions). All on-camera work is file read, table lookup, and
-   integer arithmetic.
-2. **Offline training layer (Google Colab)** -- Pandas + scikit-learn
-   (`DecisionTreeClassifier`) turn logs into `unified.tbl`.
-3. **CI/CD layer (GitHub Actions)** -- `build.yml` builds firmware for the
-   camera matrix; `release.yml` publishes per-camera releases with the LUT.
-4. **Continuous improvement loop** -- new logs feed the next retraining.
+1. **Camera layer (firmware, `modules/ettr/`)** — integer-only C in the ETTR
+   module:
+   - **Data logging** — on each half-press, appends sensor stats to
+     `A:/ML/logs/unified_log.txt` (green-channel light level from the RAW
+     histogram, per-channel raw percentiles, ISO/shutter, WB, file number).
+   - **Decision engine** — reads `A:/ML/models/unified.tbl` and applies the
+     learned ISO / ALO / HTP through ML's own setters; the *metered* ETTR owns
+     the exposure push. Nearest-neighbour lookup, integer-only.
+   - **AI White Balance** — confidence-clipped bright-pixels auto-WB (RAW+JPEG).
+   - **AI Picture Tune** — per-lens Canon contrast/saturation (JPEG).
+   - **AI Modes** — restricts all of the above to the chosen shooting modes.
+2. **Offline training (internal)** — turns exported logs into `unified.tbl`.
+   Treated as a black box here; the on-camera side only consumes the LUT.
+3. **CI/CD (GitHub Actions)** — `build.yml` builds firmware for the camera
+   matrix; `release.yml` publishes per-camera releases with the LUT.
 
-## Data Flow
+## Data flow
 
 ```
-+-- CAMERA (EOS 6D) -------------------------------------------------+
-|  half-press --> unified_logger.lua --> A:/ML/logs/unified_log.txt  |
-|  half-press --> decision_engine.lua                                |
-|      load unified.tbl -> compute_light_level -> find_decision      |
-|      -> set_shutter_fraction / set_iso / set_wb (+ alo/htp stubs)  |
-|      -> log_decision                                               |
++-- CAMERA (EOS 6D, ettr.mo) ---------------------------------------+
+|  half-press:                                                      |
+|    log sensor stats  -> A:/ML/logs/unified_log.txt                |
+|    read unified.tbl  -> integer nearest-neighbour lookup          |
+|      -> set_iso floor / set_htp / set_alo   (ML setters)          |
+|      -> metered ETTR owns the exposure push (M mode)              |
+|      -> AI white balance (highlights)  -> custom WB gains         |
+|      -> AI picture tune (per lens)     -> picstyle contrast/sat   |
 +-------------------------------------------------------------------+
-        |  (export unified_log.txt from SD card)
+        |  (export unified_log.txt from the SD card)
         v
-+-- OFFLINE TRAINING (Colab / lut_training_multi_param.py) ----------+
-|  parse log -> DataFrame -> DecisionTreeClassifier(max_depth=4)     |
-|  + integer ETTR/ALO/HTP thresholds + scene WB table                |
-|  -> deterministic, sorted unified.tbl (+ iso_model.joblib)         |
++-- OFFLINE TRAINING (internal) ------------------------------------+
+|  logs -> model -> deterministic, sorted unified.tbl               |
 +-------------------------------------------------------------------+
-        |  (copy unified.tbl back to A:/ML/models/  +  git push)
+        |  (copy unified.tbl to A:/ML/models/)
         v
 +-- CI/CD (GitHub Actions) -----------------------------------------+
-|  build.yml (matrix) -> firmware + unified-lut artifacts           |
+|  build.yml (matrix) -> firmware + full installer artifacts        |
 |  release.yml -> release/EOS-<model>/ + [PARTIAL] handling         |
 +-------------------------------------------------------------------+
         |
         v
-   decision_engine reads the updated LUT on the next half-press
+   the firmware reads the updated LUT on the next half-press
    -> new logs collected -> cycle repeats
 ```
 
 ## The improvement loop (no CI required)
 
-The loop is runnable entirely by hand: export `unified_log.txt`, run
-`lut_training_multi_param.py` (or the notebook), copy the resulting
-`unified.tbl` to `A:/ML/models/`. The new LUT is **hot-swapped** -- it takes
-effect on the very next half-press because `load_unified_model` runs fresh each
-time; no reflash, no reboot. CI (build/release) is an optional convenience for
-distributing firmware, not part of the retraining path.
+Runnable entirely by hand: export `unified_log.txt`, produce a new
+`unified.tbl` offline, copy it to `A:/ML/models/`. The LUT is **hot-swapped** —
+it takes effect on the very next half-press (loaded fresh each time; no reflash,
+no reboot). CI is an optional convenience for distributing firmware, not part of
+the retraining path.
 
 ## Key invariants
 
-- **Integer-only on camera.** No floats, no fractional division; `math.floor`
-  only in `compute_light_level`.
-- **Threshold alignment.** The training thresholds (200/30/20/50) are the same
-  integers the LUT encodes; the camera never re-evaluates them.
-- **Deterministic training.** Same log in -> byte-identical `unified.tbl` out
-  (fixed seed, sorted rows); notebook and script agree.
+- **Single source of adjustment.** Each of ETTR/ISO, WB, ALO, HTP is driven from
+  exactly one place (the ETTR module), through ML's own controls and menu.
+- **Integer-only on camera.** No floats, no fractional division; the DIGIC 5+
+  ARM Cortex-R4 has no FPU.
+- **RAW-based light level.** Exposure is read from the RAW histogram (true
+  sensor data), not the ExpSim-brightened preview.
+- **LUT fits the camera.** The LUT is capped (≤128 rows, <8 KB single read);
+  training quantizes to stay within it.

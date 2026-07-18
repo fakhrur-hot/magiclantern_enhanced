@@ -54,11 +54,7 @@ Companion tools:
 ## C. Retrain + hot-swap pass
 
 1. Export the accumulated `unified_log.txt` to a host machine.
-2. Run the trainer in that directory:
-   ```sh
-   python colab/lut_training_multi_param.py
-   ```
-   Produces a retrained `unified.tbl` (+ `iso_model.joblib`).
+2. Produce a retrained `unified.tbl` from it with the offline training.
 3. Copy the new `unified.tbl` onto `A:/ML/models/` **without rebooting**.
 4. Capture a second round; confirm the **new** decisions take effect on the next
    half-press (hot-swap -- the LUT is reloaded every event).
