@@ -38,24 +38,37 @@ HEADROOM_EV_MAX = 1.0   # >1 EV below saturation at the 99.5th pct => underexpos
 
 
 def raw_exposure_stats(path):
-    """Return dict of true-exposure stats from a CR2's RAW green channel."""
+    """True-exposure stats from a CR2's green channel.
+
+    Full RAW -> native Bayer green (most accurate). mRAW/sRAW is not flat Bayer,
+    so fall back to a LINEAR postprocess (gamma 1, no auto-bright) which maps the
+    sensor range to 0..65535 -- a good exposure proxy in the same linear space.
+    """
     with rawpy.imread(path) as raw:
-        img = raw.raw_image_visible.astype(np.float64)
-        colors = raw.raw_colors_visible
         white = float(raw.white_level)
         blk = raw.black_level_per_channel
-        # green CFA positions are colour indices 1 and 3
-        gmask = (colors == 1) | (colors == 3)
-        black_g = float(np.mean([blk[1], blk[3]]))
-        g = img[gmask] - black_g
-        g = np.clip(g, 0, None)
-    span = max(white - black_g, 1.0)
+        try:
+            img = raw.raw_image_visible.astype(np.float64)
+            colors = raw.raw_colors_visible            # raises on mRAW/sRAW
+            gmask = (colors == 1) | (colors == 3)
+            black_g = float(np.mean([blk[1], blk[3]]))
+            g = np.clip(img[gmask] - black_g, 0, None)
+            span = max(white - black_g, 1.0)
+            method = "rawBayer"
+        except Exception:
+            rgb = raw.postprocess(gamma=(1, 1), no_auto_bright=True, output_bps=16,
+                                  use_camera_wb=False, half_size=True,
+                                  output_color=rawpy.ColorSpace.raw)
+            g = rgb[:, :, 1].astype(np.float64).ravel()
+            span = 65535.0
+            method = "postproc"
+
+    sat = 0.99 * span
     p90 = float(np.percentile(g, 90))
     p995 = float(np.percentile(g, 99.5))
     median = float(np.percentile(g, 50))
-    clip_frac = float(np.mean(img[gmask] >= 0.99 * white))
+    clip_frac = float(np.mean(g >= sat))
     headroom_ev = float(np.log2(span / max(p995, 1.0)))
-    # normalise the 90th percentile to 0..255 to compare with the logged LightLevel
     light_true = int(round(p90 / span * 255))
     if clip_frac > CLIP_FRAC_MAX:
         verdict = "CLIPPED"
@@ -64,7 +77,8 @@ def raw_exposure_stats(path):
     else:
         verdict = "ETTR-OK"
     return dict(light_true=light_true, median=int(round(median / span * 255)),
-                clip_pct=clip_frac * 100, headroom_ev=headroom_ev, verdict=verdict)
+                clip_pct=clip_frac * 100, headroom_ev=headroom_ev,
+                verdict=verdict, method=method)
 
 
 def parse_log(path):
