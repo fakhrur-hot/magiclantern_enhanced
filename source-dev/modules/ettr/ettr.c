@@ -1885,8 +1885,8 @@ static struct menu_entry ettr_menu[] =
                 .name = "AI White Balance",
                 .priv = &ai_white_balance,
                 .max = 1,
-                .help  = "Neutralize WB from the brightest highlights (white-point).",
-                .help2 = "Integer white-patch on the RAW channels. Affects RAW+JPEG.",
+                .help  = "Adaptive WB: bright-pixels + gray-world, confidence blended.",
+                .help2 = "Dim/clipped highlights are NOT forced white. Glides per press.",
             },
             {
                 .name = "AI Picture Tune",

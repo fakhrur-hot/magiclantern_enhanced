@@ -296,38 +296,98 @@ static int ai_lut_apply(void)
  * per-channel white-point step). Affects RAW metadata + JPEG. Needs raw LV.
  * Returns 1 if applied, 0 if raw not ready / no usable highlights.
  * -------------------------------------------------------------------------- */
-static int ai_channel_hi(int gray_proj)
+/* Per-channel raw percentiles: out[0]=P99, out[1]=P95, out[2]=P50 (raw levels,
+ * -1 = unavailable). One subsampled metering pass per channel. */
+static int ai_channel_stats(int gray_proj, int out[3])
 {
-    int pct = 950, v = -1;   /* 95th percentile */
-    raw_hist_get_percentile_levels(&pct, &v, 1,
+    int pcts[3] = {990, 950, 500};
+    out[0] = out[1] = out[2] = -1;
+    raw_hist_get_percentile_levels(pcts, out, 3,
         gray_proj | GRAY_PROJECTION_DARK_ONLY, 4);
-    return v;   /* raw level, or -1 if unavailable */
+    return (out[0] >= 0 && out[1] >= 0 && out[2] >= 0);
 }
 
+/* Confidence (0..256) of the last WB estimate; -1 = none yet. Logged. */
+static int ai_wb_conf = -1;
+
+/* White-point WB v2 -- confidence-clipped bright-pixels estimator.
+ *
+ * Literature-backed design (Shades-of-Gray, Finlayson/Trezzi; Bright Pixels,
+ * Joze/Drew CIC'12; near-white AWB; temporally damped camera AWB):
+ *  - White anchor = P95 per channel (a bright POPULATION, not the max --
+ *    robust to specular/clipped pixels, unlike classic white-patch).
+ *  - Gray anchor = P50 (gray-world on medians) as the robust fallback.
+ *  - CLAHE-like clip on estimator influence: trust in the white anchor scales
+ *    with how bright the highlight really is. A dim "brightest highlight"
+ *    (the reported failure case) gets low confidence and is NOT forced to
+ *    pure white; the estimate leans on the gray anchor / current WB instead.
+ *  - Clipped highlights (P99 at saturation) halve confidence: clamped
+ *    channels lie about the ratio.
+ *  - Temporal damping + per-press step clip: gains glide toward the estimate
+ *    (halfway per half-press, max +/-160/press) instead of jumping.
+ * Integer-only. Gains are AsShotNeutral-style (1024 = channel/green ratio). */
 static int ai_white_point_wb(void)
 {
-    int r_hi = ai_channel_hi(GRAY_PROJECTION_RED);
-    int g_hi = ai_channel_hi(GRAY_PROJECTION_GREEN);
-    int b_hi = ai_channel_hi(GRAY_PROJECTION_BLUE);
-    if (r_hi < 0 || g_hi < 0 || b_hi < 0) return 0;   /* raw not ready */
+    int r[3], g[3], b[3];
+    if (!ai_channel_stats(GRAY_PROJECTION_RED, r))   return 0;
+    if (!ai_channel_stats(GRAY_PROJECTION_GREEN, g)) return 0;
+    if (!ai_channel_stats(GRAY_PROJECTION_BLUE, b))  return 0;
 
     int black = raw_info.black_level;
     int span = raw_info.white_level - black;
-    r_hi -= black; g_hi -= black; b_hi -= black;
-    if (r_hi < 1 || g_hi < 1 || b_hi < 1) return 0;
-    if (span <= 0 || g_hi < span / 8) return 0;       /* no real highlights */
+    if (span <= 0) return 0;
+    for (int i = 0; i < 3; i++)
+    {
+        r[i] -= black; g[i] -= black; b[i] -= black;
+        if (r[i] < 0) r[i] = 0;
+        if (g[i] < 0) g[i] = 0;
+        if (b[i] < 0) b[i] = 0;
+    }
+    if (g[1] < 1) return 0;   /* no usable signal at all */
 
-    /* Canon WBGain is AsShotNeutral-style (1024 = neutral): gain = raw_channel /
-     * raw_green at the white point, and the pipeline DIVIDES by it. So R and B
-     * gains are the channel-to-green RATIO (typically < 1024 -- daylight R~0.47,
-     * B~0.62). A neutral highlight then renders R=G=B. (Getting this inverted
-     * suppressed R/B and gave a green cast.) Clamp to a sane WB range. */
-    int r_gain = AI_WB_NEUTRAL * r_hi / g_hi;
-    int b_gain = AI_WB_NEUTRAL * b_hi / g_hi;
-    r_gain = COERCE(r_gain, 256, 1536);   /* ~0.25x .. 1.5x */
-    b_gain = COERCE(b_gain, 256, 1536);
+    /* current gains = the "do nothing" anchor */
+    int cur_r = AI_WB_NEUTRAL, cur_b = AI_WB_NEUTRAL;
+    if (lens_info.wb_mode == WB_CUSTOM && lens_info.WBGain_R && lens_info.WBGain_B)
+    {
+        cur_r = (int) lens_info.WBGain_R;
+        cur_b = (int) lens_info.WBGain_B;
+    }
 
-    lens_set_custom_wb_gains(r_gain, AI_WB_NEUTRAL, b_gain);
+    /* confidence in the bright anchor: 0 at <= span/8, full at >= span/2 */
+    int conf = (g[1] - span / 8) * 256 / (span / 2 - span / 8);
+    conf = COERCE(conf, 0, 256);
+    /* clipped highlights lie about channel ratios -> halve the trust */
+    if (g[0] >= span * 97 / 100 || r[0] >= span * 97 / 100 || b[0] >= span * 97 / 100)
+        conf = conf / 2;
+
+    /* white-patch estimate at the bright anchor (P95) */
+    int r_hi = AI_WB_NEUTRAL * r[1] / g[1];
+    int b_hi = AI_WB_NEUTRAL * b[1] / g[1];
+
+    /* gray-world estimate at the medians; if the scene is too dark for a
+     * meaningful median, fall back to "keep current" */
+    int r_md = cur_r, b_md = cur_b;
+    if (g[2] >= 8 && r[2] >= 1 && b[2] >= 1)
+    {
+        r_md = AI_WB_NEUTRAL * r[2] / g[2];
+        b_md = AI_WB_NEUTRAL * b[2] / g[2];
+    }
+
+    /* confidence-clipped blend (scene-adaptive Shades-of-Gray) */
+    int r_est = (r_hi * conf + r_md * (256 - conf)) / 256;
+    int b_est = (b_hi * conf + b_md * (256 - conf)) / 256;
+
+    /* temporal damping: glide halfway toward the estimate, step-clipped */
+    int new_r = cur_r + (r_est - cur_r) / 2;
+    int new_b = cur_b + (b_est - cur_b) / 2;
+    new_r = COERCE(new_r, cur_r - 160, cur_r + 160);
+    new_b = COERCE(new_b, cur_b - 160, cur_b + 160);
+    new_r = COERCE(new_r, 256, 1536);
+    new_b = COERCE(new_b, 256, 1536);
+
+    ai_wb_conf = conf;
+    if (new_r != cur_r || new_b != cur_b)
+        lens_set_custom_wb_gains(new_r, AI_WB_NEUTRAL, new_b);
     return 1;
 }
 
@@ -468,10 +528,10 @@ static int ai_lut_log(void)
      * (all 0..255, -1 = n/a) -- features for offline WB/scene/ISO learning. */
     snprintf(line, sizeof(line),
         "\nHistSrc=disp\nScene=%s\nLightLevel=%d\nLightSrc=%s"
-        "\nRawMed=%d\nRawP99=%d\nRawR=%d\nRawB=%d"
+        "\nRawMed=%d\nRawP99=%d\nRawR=%d\nRawB=%d\nWbConf=%d"
         "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
         scene, light, (ai_light_src ? "raw" : "disp"),
-        ai_raw_med, ai_raw_p99, r_med, b_med,
+        ai_raw_med, ai_raw_p99, r_med, b_med, ai_wb_conf,
         shutter_ms, iso, wr, wg, wbb, fnum);
     FIO_WriteFile(f, line, strlen(line));
 
