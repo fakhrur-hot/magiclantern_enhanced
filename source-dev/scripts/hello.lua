@@ -1,3 +1,5 @@
+-- Hello World
+-- Simple hello world script
 menu.close()
 console.show()
 print "Hello, World!"

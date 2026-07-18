@@ -1,3 +1,5 @@
+-- Screenshot
+-- Take a screenshot after a delay
 scrnshot_menu = menu.new
 {
     parent  = "Screenshot on Keypress",

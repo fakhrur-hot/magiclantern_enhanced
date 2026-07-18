@@ -791,7 +791,7 @@ static int raw_lv_get_resolution(int* width, int* height)
 /* requires raw_sem */
 static void raw_lv_free_buffer()
 {
-    printf("Freeing LV raw buffer %x.\n", raw_lv_buffer);
+    dbg_printf("Freeing LV raw buffer %x.\n", raw_lv_buffer);
     if(raw_allocated_lv_buffer) {
         free(raw_allocated_lv_buffer);
         raw_allocated_lv_buffer = 0;
@@ -817,20 +817,20 @@ static void raw_lv_realloc_buffer()
         /* no need for a larger buffer */
         if (raw_lv_buffer != (void *) DEFAULT_RAW_BUFFER)
         {
-            printf("Default raw buffer OK for %dx%d (%s)", width, height, format_memory_size(required_size));
+            dbg_printf("Default raw buffer OK for %dx%d (%s)", width, height, format_memory_size(required_size));
 
             if (raw_lv_buffer && raw_lv_buffer == raw_allocated_lv_buffer)
             {
-                printf(" - back to default.\n");
+                dbg_printf(" - back to default.\n");
                 raw_lv_free_buffer();
             }
             else if (raw_lv_buffer)
             {
-                printf(": %x -> %x\n", raw_lv_buffer, DEFAULT_RAW_BUFFER);
+                dbg_printf(": %x -> %x\n", raw_lv_buffer, DEFAULT_RAW_BUFFER);
             }
             else
             {
-                printf(".\n");
+                dbg_printf(".\n");
             }
         }
 
@@ -845,8 +845,8 @@ static void raw_lv_realloc_buffer()
         return;
     }
 
-    printf("Default raw buffer too small (%s", format_memory_size(raw_lv_buffer_size));
-    printf(", need %dx%d %s) - reallocating.\n", width, height, format_memory_size(required_size));
+    dbg_printf("Default raw buffer too small (%s", format_memory_size(raw_lv_buffer_size));
+    dbg_printf(", need %dx%d %s) - reallocating.\n", width, height, format_memory_size(required_size));
 
     if (raw_lv_buffer && raw_lv_buffer != (void *) DEFAULT_RAW_BUFFER)
     {
@@ -1192,7 +1192,7 @@ int raw_update_params_work()
     if (width != raw_info.width || height != raw_info.height)
     {
         /* raw dimensions changed? force a full update, including preview window */
-        printf("Resolution changed: %dx%d -> %dx%d\n", raw_info.width, raw_info.height, width, height);
+        dbg_printf("Resolution changed: %dx%d -> %dx%d\n", raw_info.width, raw_info.height, width, height);
         dirty = 1;
     }
 
@@ -1342,7 +1342,7 @@ int raw_update_params_work()
     /* log significant changes to console */
     if (ABS(black_mean - raw_info.black_level) >= 10)
     {
-        printf("Black level: %d\n", black_mean);
+        dbg_printf("Black level: %d\n", black_mean);
     }
 
     raw_info.black_level = black_mean;
@@ -1361,7 +1361,7 @@ int raw_update_params_work()
         #endif
         raw_info.white_level = autodetect_white_level(canon_white);
         raw_info.dynamic_range = compute_dynamic_range(black_mean, black_stdev_x100, raw_info.white_level);
-        printf("White level: %d -> %d\n", canon_white, raw_info.white_level);
+        dbg_printf("White level: %d -> %d\n", canon_white, raw_info.white_level);
     }
 #ifdef CONFIG_RAW_LIVEVIEW
     else if (!is_movie_mode())

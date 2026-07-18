@@ -1,3 +1,5 @@
+-- Rec Delay
+-- Delayed recording start
 recdelay_running = false
 recdelay_stop = false
 recdelay_countdown = 0

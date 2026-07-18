@@ -1,3 +1,5 @@
+-- API Tests
+-- Tests for the Lua scripting API
 require("logger")
 test_log = nil
 function printf(s,...)

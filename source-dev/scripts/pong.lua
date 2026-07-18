@@ -1,3 +1,5 @@
+-- Pong
+-- Classic game
 require("keys")
 score_right = 0
 score_left = 0

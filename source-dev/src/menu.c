@@ -6061,7 +6061,8 @@ static struct menu_entry * entry_find_by_name(const char* menu_name, const char*
 
     if (count > 1)
     {
-        console_show();
+        /* log the conflict, but don't force the console over LiveView --
+         * it used to park on screen and collect every later printf */
         printf("Duplicate menu: %s -> %s (%d)\n", menu_name, entry_name, count);
         return 0;
     }

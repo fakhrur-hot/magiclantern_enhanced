@@ -1,3 +1,5 @@
+-- Menu Test
+-- Menu scripting example
 mymenu = menu.new
 {
     parent = "Debug",

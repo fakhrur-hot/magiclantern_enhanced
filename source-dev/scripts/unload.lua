@@ -1,3 +1,5 @@
+-- Unload Lua
+-- Free memory used by the Lua module
 menu.close()
 console.show()
 sleep(0.5)

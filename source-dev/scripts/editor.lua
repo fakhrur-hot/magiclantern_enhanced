@@ -1,3 +1,5 @@
+-- Text Editor
+-- Edit text files on the card
 require("keys")
 require("logger")
 function inc(val,min,max)

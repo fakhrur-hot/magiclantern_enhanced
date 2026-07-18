@@ -1,3 +1,5 @@
+-- Calculator
+-- Simple calculator
 require("keys")
 require("logger")
 calc = {}

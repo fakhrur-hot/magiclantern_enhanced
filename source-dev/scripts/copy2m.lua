@@ -1,3 +1,5 @@
+-- Copy to M
+-- Copy exposure settings to M mode
 require("config")
 prop_value = {}
 prop_value.__index = prop_value

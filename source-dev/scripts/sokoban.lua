@@ -1,3 +1,5 @@
+-- Sokoban
+-- Puzzle game
 require("keys")
 require("config")
 function printf(...)
