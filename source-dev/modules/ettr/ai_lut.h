@@ -213,7 +213,11 @@ static void ai_lut_log(void)
 {
     int light = ai_light_level();
     const char * scene = ai_scene();
-    int iso = raw2iso(lens_info.raw_iso);
+    /* In Auto ISO, raw_iso is 0; use the resolved auto value so ISO (the
+     * training target) is real, not 0. */
+    int riso = lens_info.raw_iso;
+    if (riso == 0) riso = lens_info.raw_iso_auto;
+    int iso = raw2iso(riso);
     int shutter_ms = raw2shutter_ms(lens_info.raw_shutter);
     int ts = get_seconds_clock();
 
@@ -239,7 +243,8 @@ static void ai_lut_log(void)
     for (int i = 0; i < HIST_WIDTH; i++)
     {
         char tmp[12];
-        snprintf(tmp, sizeof(tmp), i ? ",%u" : "%u", (unsigned) h[i]);
+        /* ML's snprintf has no %u; use %d (bin counts fit in int). */
+        snprintf(tmp, sizeof(tmp), i ? ",%d" : "%d", (int) h[i]);
         int tl = strlen(tmp);
         if (hn + tl < (int) sizeof(hbuf) - 1)
         {
