@@ -46,7 +46,6 @@ FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 # collection) + the LUT, but NOT decision_engine.lua (superseded parallel
 # adjustment source). See docs/ETTR_AI_INTEGRATION.md.
 REPO_FILES = [
-    ("lua_scripts/unified_logger.lua", "ML/scripts/unified_logger.lua"),
     ("models/unified.tbl", "ML/models/unified.tbl"),
 ]
 FIRMWARE_FILES = ["autoexec.bin", "magiclantern.bin"]

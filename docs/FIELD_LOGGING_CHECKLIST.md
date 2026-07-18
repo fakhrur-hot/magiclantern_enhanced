@@ -1,8 +1,10 @@
 # Field Logging Checklist
 
-For collecting clean training data with `unified_logger.lua` on the EOS 6D.
-Logs are written on each **half-press** to `A:/ML/logs/unified_log.txt`.
-Companion: `docs/TASK10_RUNBOOK.md`, `tools/analyze_log.py`.
+For collecting clean training data on the EOS 6D. Logging is done **in the
+firmware** (the ETTR module) -- ML Lua has no histogram access, so the old Lua
+logger was retired. Each **half-press** appends one record to
+`ML/logs/unified_log.txt`, controlled by the **AI Data Logging** menu toggle
+(Expo -> Auto ETTR). Companion: `docs/TASK10_RUNBOOK.md`, `tools/analyze_log.py`.
 
 ## Why half-press
 At half-press the camera has metered the scene: the histogram (→ integer
@@ -13,12 +15,13 @@ is taken yet — so logging never interferes with capture.
 
 ## Before you shoot (setup)
 
-- [ ] Spare SD card (never the primary) with Magic Lantern installed.
-- [ ] `ML/scripts/unified_logger.lua` present; `ML/logs/` folder exists.
-- [ ] Magic Lantern **Lua module enabled**.
-- [ ] **Ground-truth pass: turn the AI OFF** — Expo → Auto ETTR → **Auto ISO
-      Optimizer = OFF**. This makes the log capture the camera's *native*
-      metering, not values the AI already changed (avoids feedback bias).
+- [ ] Spare SD card (never the primary) with Magic Lantern installed; `ML/logs/`
+      folder exists (created by the full installer).
+- [ ] **AI Data Logging = ON** (Expo → Auto ETTR → AI Data Logging).
+- [ ] **Ground-truth pass: turn the optimizer OFF** — Expo → Auto ETTR →
+      **Auto ISO Optimizer = OFF** (keep **AI Data Logging = ON**). Logging is
+      independent of the optimizer, so this logs the camera's *native* metering,
+      not values the AI already changed (avoids feedback bias).
 - [ ] **Be in LiveView** while half-pressing — on the 6D the histogram is only
       populated in LV. OVF half-press → `HIST_NIL` / useless `LightLevel=128`.
 - [ ] Shoot RAW (CR2) if you also want to validate results later with exiftool.
