@@ -1742,8 +1742,13 @@ static unsigned int auto_ettr_polling_cbr()
 
     /* Item 1: white-point WB, once per half-press (retry until raw is ready). */
     static int ai_wb_done = 0;
+    int ai_metered = 0;   /* did a raw-metering action run this poll? */
     if (!get_halfshutter_pressed()) ai_wb_done = 0;
-    else if (ai_on && ai_white_balance && !ai_wb_done && ai_white_point_wb()) ai_wb_done = 1;
+    else if (ai_on && ai_white_balance && !ai_wb_done && ai_white_point_wb())
+    {
+        ai_wb_done = 1;
+        ai_metered = 1;
+    }
 
     /* Item 2: per-lens picture tune, re-applied when the lens changes. */
     static int ai_last_lens = -1;
@@ -1774,16 +1779,22 @@ static unsigned int auto_ettr_polling_cbr()
          * display histogram fallback) is ready -- retry next poll. This no
          * longer requires the ML histogram overlay to be enabled. */
         if (riso > 0 && ai_lut_log())
+        {
             ai_logged_press = 1;
+            ai_metered = 1;
+        }
     }
 
     if (lv && NOT_RECORDING && ((void*)&raw_lv_request != (void*)&ret_0))
         auto_ettr_step_lv();
 
-    /* Keep the ML console off LiveView while logging: raw metering (raw.c buffer
-     * messages) and any ETTR debug prints go to the console and otherwise pile up
-     * over the whole screen. The log is file-based, so nothing is lost. */
-    if (ai_data_logging && lv)
+    /* Keep the ML console off LiveView: raw metering (raw.c buffer messages) and
+     * ETTR debug prints go to the console and otherwise pile up over the screen.
+     * Hide it ONCE, only right after a metering action actually ran (that's what
+     * prints) -- NOT every poll: console_hide() does msleep(100)+redraw(), so
+     * calling it every cycle forced a constant full redraw that flickered the
+     * GUI/menu and stalled this task. Never fight the menu while it's open. */
+    if (ai_metered && !gui_menu_shown())
         console_hide();
 
     return 0;
