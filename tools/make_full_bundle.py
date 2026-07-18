@@ -41,6 +41,7 @@ FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 # retired. See docs/ETTR_AI_INTEGRATION.md.
 AI_FILES = [
     ("models/unified.tbl", "ML/models/unified.tbl"),
+    ("models/lens_tune.tbl", "ML/models/lens_tune.tbl"),  # per-lens picture tune
 ]
 LOGS_KEEP = "ML/logs/.keep"  # firmware writes unified_log.txt here
 

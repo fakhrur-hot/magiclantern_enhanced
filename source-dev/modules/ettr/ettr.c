@@ -50,6 +50,14 @@ static CONFIG_INT("auto.ettr.iso.optimizer", auto_iso_optimizer, 1);
  * half-shutter press (firmware-side; ML Lua has no histogram access). */
 static CONFIG_INT("auto.ettr.ai.logging", ai_data_logging, 1);
 
+/* AI white balance: neutralize WB from the brightest highlights (white-point).
+ * Affects RAW metadata + JPEG. Default ON. */
+static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 1);
+
+/* AI picture tune: per-lens Canon contrast/saturation from lens_tune.tbl.
+ * JPEG-only (picstyle does not touch RAW). Default OFF. */
+static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 0);
+
 static int debug_info = 0;
 static int show_metered_areas = 0;
 
@@ -1686,13 +1694,31 @@ static unsigned int auto_ettr_polling_cbr()
 {
     auto_iso_optimizer_step();
 
-    /* Keep raw LV available while logging so ai_light_level() can read the RAW
-     * histogram (true exposure) instead of the ExpSim-brightened display one.
+    /* Keep raw LV available while logging OR white-balancing so the RAW
+     * histogram (true exposure / per-channel white point) is readable.
      * Reference-counted; balanced request/release. */
     static int ai_raw_req = 0;
-    int ai_want_raw = ai_data_logging && lv && ((void*)&raw_lv_request != (void*)&ret_0);
+    int ai_want_raw = (ai_data_logging || ai_white_balance) && lv
+                      && ((void*)&raw_lv_request != (void*)&ret_0);
     if (ai_want_raw && !ai_raw_req) { raw_lv_request(); ai_raw_req = 1; }
     else if (!ai_want_raw && ai_raw_req) { raw_lv_release(); ai_raw_req = 0; }
+
+    /* Item 1: white-point WB, once per half-press (retry until raw is ready). */
+    static int ai_wb_done = 0;
+    if (!get_halfshutter_pressed()) ai_wb_done = 0;
+    else if (ai_white_balance && !ai_wb_done && ai_white_point_wb()) ai_wb_done = 1;
+
+    /* Item 2: per-lens picture tune, re-applied when the lens changes. */
+    static int ai_last_lens = -1;
+    if (ai_picture_tune_en && (int) lens_info.lens_id != ai_last_lens)
+    {
+        ai_picture_tune();
+        ai_last_lens = (int) lens_info.lens_id;
+    }
+    else if (!ai_picture_tune_en)
+    {
+        ai_last_lens = -1;   /* re-apply after the user toggles it back on */
+    }
 
     /* AI data logging: log ONCE per half-press, but only once the histogram is
      * built AND ISO is resolved -- both lag the rising edge during metering, so
@@ -1856,6 +1882,20 @@ static struct menu_entry ettr_menu[] =
                 .help2 = "For AI-LUT training. Use in LiveView. Turn off for normal use.",
             },
             {
+                .name = "AI White Balance",
+                .priv = &ai_white_balance,
+                .max = 1,
+                .help  = "Neutralize WB from the brightest highlights (white-point).",
+                .help2 = "Integer white-patch on the RAW channels. Affects RAW+JPEG.",
+            },
+            {
+                .name = "AI Picture Tune",
+                .priv = &ai_picture_tune_en,
+                .max = 1,
+                .help  = "Per-lens contrast/saturation from ML/models/lens_tune.tbl.",
+                .help2 = "JPEG only (picstyle does not affect RAW). Off by default.",
+            },
+            {
                 .name = "Show debug info",
                 .priv = &debug_info,
                 .select = debug_info_toggle,
@@ -1903,6 +1943,8 @@ MODULE_PROPHANDLERS_END()
 MODULE_CONFIGS_START()
     MODULE_CONFIG(auto_ettr)
     MODULE_CONFIG(ai_data_logging)
+    MODULE_CONFIG(ai_white_balance)
+    MODULE_CONFIG(ai_picture_tune_en)
     MODULE_CONFIG(auto_ettr_trigger)
     MODULE_CONFIG(auto_ettr_ignore)
     MODULE_CONFIG(auto_ettr_target_level)

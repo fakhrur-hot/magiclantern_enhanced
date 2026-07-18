@@ -1,0 +1,20 @@
+# Per-lens picture tune for AI Picture Tune (JPEG only -- does not affect RAW).
+# Read by the firmware (modules/ettr/ai_lut.h -> ai_picture_tune) when the
+# "AI Picture Tune" menu toggle is ON, and applied via Canon's picture-style
+# contrast/saturation/color-tone whenever the mounted lens changes.
+#
+# Format:  lens_id|contrast|saturation|color_tone
+#   lens_id       Canon lens id (see ML: lens_info.lens_id; shown in ML lens
+#                 info / Debug). lens_id 0 = DEFAULT applied to any unlisted lens.
+#   contrast      -4..4  (uniform-contrast offset for this lens)
+#   saturation    -4..4
+#   color_tone    -4..4  (amber<->magenta)
+#
+# Goal: give different lenses a UNIFORM rendered contrast/saturation. Populate
+# one row per lens as you shoot; the firmware clamps every value to -4..4.
+#
+# lens_id 0 = default (neutral). Replace/add rows with your measured offsets.
+0|0|0|0
+# --- examples (edit lens_id + values for YOUR glass) ---
+# 61494|1|0|0     # e.g. a lower-contrast vintage lens -> +1 contrast
+# 61182|-1|1|0    # e.g. a punchy modern lens -> -1 contrast, +1 saturation

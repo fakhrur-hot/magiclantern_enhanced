@@ -13,7 +13,16 @@
 
 #include <fio-ml.h>
 
+/* picstyle setters are declared core-only (FEATURE_PICSTYLE) in picstyle.h, but
+ * the symbols ARE exported to modules (present in the core .sym) -- declare the
+ * prototypes ourselves so we can drive Canon's picture style from the module. */
+extern void picstyle_set_current_contrast(int value);
+extern void picstyle_set_current_saturation(int value);
+extern void picstyle_set_current_color_tone(int value);
+
 #define AI_LUT_PATH    "ML/models/unified.tbl"
+#define AI_LENS_TUNE_PATH "ML/models/lens_tune.tbl"
+#define AI_WB_NEUTRAL  1024   /* lens_set_custom_wb_gains scale: 1024 = 1.0x */
 #define AI_LUT_MAXROWS 128
 #define AI_LUT_BUFSZ   8192   /* single FIO_ReadFile cap; keep the LUT < 8 KB */
 
@@ -270,9 +279,104 @@ static int ai_lut_apply(void)
     struct ai_lut_row * row = &ai_rows[idx];
     set_htp(row->htp);
     set_alo(row->alo);
+    /* LUT WB is G=100 reference; convert to the 1024=neutral gain scale.
+     * (Only fires for a known scene; white-point WB owns WB otherwise.) */
     if (!streq(scene, "unknown"))
-        lens_set_custom_wb_gains(row->wb_r, row->wb_g, row->wb_b);
+        lens_set_custom_wb_gains(row->wb_r * AI_WB_NEUTRAL / 100,
+                                 AI_WB_NEUTRAL,
+                                 row->wb_b * AI_WB_NEUTRAL / 100);
     return row->iso;
+}
+
+/* --------------------------------------------------------------------------
+ * Item 1: White-point white balance. Measure the brightest highlights per RAW
+ * channel (95th percentile, black-subtracted) and set custom WB gains so a
+ * neutral highlight renders R=G=B -- "pure white at the whitest highlights".
+ * Integer-only; the classical white-patch method (mirrors Fixed16bit's auto-WB
+ * per-channel white-point step). Affects RAW metadata + JPEG. Needs raw LV.
+ * Returns 1 if applied, 0 if raw not ready / no usable highlights.
+ * -------------------------------------------------------------------------- */
+static int ai_channel_hi(int gray_proj)
+{
+    int pct = 950, v = -1;   /* 95th percentile */
+    raw_hist_get_percentile_levels(&pct, &v, 1,
+        gray_proj | GRAY_PROJECTION_DARK_ONLY, 4);
+    return v;   /* raw level, or -1 if unavailable */
+}
+
+static int ai_white_point_wb(void)
+{
+    int r_hi = ai_channel_hi(GRAY_PROJECTION_RED);
+    int g_hi = ai_channel_hi(GRAY_PROJECTION_GREEN);
+    int b_hi = ai_channel_hi(GRAY_PROJECTION_BLUE);
+    if (r_hi < 0 || g_hi < 0 || b_hi < 0) return 0;   /* raw not ready */
+
+    int black = raw_info.black_level;
+    int span = raw_info.white_level - black;
+    r_hi -= black; g_hi -= black; b_hi -= black;
+    if (r_hi < 1 || g_hi < 1 || b_hi < 1) return 0;
+    if (span <= 0 || g_hi < span / 8) return 0;       /* no real highlights */
+
+    /* gains (1024 = neutral): scale R and B so they match G at the white point */
+    int r_gain = AI_WB_NEUTRAL * g_hi / r_hi;
+    int b_gain = AI_WB_NEUTRAL * g_hi / b_hi;
+    /* clamp to +/-1 stop so an odd scene can't throw a wild correction */
+    r_gain = COERCE(r_gain, AI_WB_NEUTRAL / 2, AI_WB_NEUTRAL * 2);
+    b_gain = COERCE(b_gain, AI_WB_NEUTRAL / 2, AI_WB_NEUTRAL * 2);
+
+    lens_set_custom_wb_gains(r_gain, AI_WB_NEUTRAL, b_gain);
+    return 1;
+}
+
+/* --------------------------------------------------------------------------
+ * Item 2: Per-lens picture tune. Read ML/models/lens_tune.tbl and set Canon
+ * picture-style contrast/saturation/color-tone for the current lens, so
+ * different lenses render with uniform contrast/saturation.
+ * Format: lens_id|contrast|saturation|color_tone   (each -4..4; lens_id 0 =
+ * default fallback). JPEG-only (picstyle does not affect RAW).
+ * -------------------------------------------------------------------------- */
+static void ai_picture_tune(void)
+{
+    static char buf[2048];
+    int rc = read_file(AI_LENS_TUNE_PATH, buf, (int) sizeof(buf) - 1);
+    if (rc <= 0) return;
+    if (rc > (int) sizeof(buf) - 1) rc = sizeof(buf) - 1;
+    buf[rc] = 0;
+
+    int cur = (int) lens_info.lens_id;
+    int c = 0, s = 0, t = 0, found = 0;
+    int dc = 0, ds = 0, dt = 0, have_def = 0;
+
+    char * p = buf;
+    while (*p && !found)
+    {
+        char * nl = p;
+        while (*nl && *nl != '\n' && *nl != '\r') nl++;
+        char saved = *nl;
+        *nl = 0;
+        if (*p != '#' && strchr(p, '|'))
+        {
+            char * f[4];
+            if (ai_split(p, f, 4) >= 4)
+            {
+                int id = atoi(f[0]);
+                int cc = COERCE(atoi(f[1]), -4, 4);
+                int ss = COERCE(atoi(f[2]), -4, 4);
+                int tt = COERCE(atoi(f[3]), -4, 4);
+                if (id == cur)   { c = cc; s = ss; t = tt; found = 1; }
+                else if (id == 0){ dc = cc; ds = ss; dt = tt; have_def = 1; }
+            }
+        }
+        *nl = saved;
+        p = nl;
+        while (*p == '\n' || *p == '\r') p++;
+    }
+    if (!found && have_def) { c = dc; s = ds; t = dt; found = 1; }
+    if (!found) return;
+
+    picstyle_set_current_contrast(c);
+    picstyle_set_current_saturation(s);
+    picstyle_set_current_color_tone(t);
 }
 
 /* --------------------------------------------------------------------------
