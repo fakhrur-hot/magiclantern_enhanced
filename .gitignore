@@ -12,3 +12,6 @@ dist/
 logs/*.txt
 # ...except the curated sample fixture used by the training pipeline
 !logs/sample_unified_log.txt
+
+# Kiro spec (local only, excluded from git)
+.kiro/specs/ai-lut-magic-lantern/
