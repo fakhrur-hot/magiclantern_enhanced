@@ -229,6 +229,11 @@ static void ai_lut_log(void)
         wbb = (int) lens_info.WBGain_B;
     }
 
+    /* Current file number via the core-exported card accessor (the raw
+     * file_number global is not exported to modules). */
+    struct card_info * card = get_shooting_card();
+    int fnum = card ? card->file_number : -1;
+
     FILE * f = FIO_CreateFileOrAppend(AI_LOG_PATH);
     if (!f) return;
 
@@ -254,9 +259,12 @@ static void ai_lut_log(void)
     }
     if (hn > 0) FIO_WriteFile(f, hbuf, hn);
 
+    /* FileNum = current camera file number. The CR2 produced by fully pressing
+     * after this half-press is FileNum+1, so validation can pair each log record
+     * to its exact RAW (see tools/validate_exposure.py). */
     snprintf(line, sizeof(line),
-        "\nScene=%s\nLightLevel=%d\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\n---\n",
-        scene, light, shutter_ms, iso, wr, wg, wbb);
+        "\nScene=%s\nLightLevel=%d\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
+        scene, light, shutter_ms, iso, wr, wg, wbb, fnum);
     FIO_WriteFile(f, line, strlen(line));
 
     FIO_CloseFile(f);
