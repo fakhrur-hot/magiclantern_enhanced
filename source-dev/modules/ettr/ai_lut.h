@@ -428,14 +428,6 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     r_est = r_est * ai_lens_wbr / 1024;
     b_est = b_est * ai_lens_wbb / 1024;
 
-    /* global warmth bias (menu "AI WB Warmth"): pure white-point AWB is Canon's
-     * "White priority" -- technically neutral, but it strips the ambience and
-     * reads cold, especially on skin. Bias the target amber like Canon's
-     * default "Ambience priority" + WB A-shift: ~2.5% per step (suppression
-     * scale: lower R gain and higher B gain = warmer). */
-    r_est = r_est * (1024 - 26 * warmth) / 1024;
-    b_est = b_est * (1024 + 26 * warmth) / 1024;
-
     /* temporal damping: glide halfway toward the estimate, step-clipped */
     int new_r = cur_r + (r_est - cur_r) / 2;
     int new_b = cur_b + (b_est - cur_b) / 2;
@@ -447,6 +439,26 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     ai_wb_conf = conf;
     if (new_r != cur_r || new_b != cur_b)
         lens_set_custom_wb_gains(new_r, AI_WB_NEUTRAL, new_b);
+
+    /* Warmth rides Canon's own WB SHIFT (B/A axis), not the gains: the gains
+     * above are the neutral measurement ("white priority" science); the shift
+     * is the ambience ("taste"), exactly how Canon separates the two.
+     *   base:  the "AI WB Warmth" menu, in real Canon A-steps
+     *   keep:  when the highlight anchor is trusted AND measures warmer than
+     *          daylight (5:30pm sun rays), add amber so golden light KEEPS its
+     *          character instead of being neutralized away
+     * Daylight reference for this sensor: AsShotNeutral r/b = 0.4736/0.624
+     * (chdk-dng.c) -> r_hi*1024/b_hi ~ 777 in neutral daylight. */
+    int wbs = warmth;
+    if (conf >= 64 && b_hi > 0)
+    {
+        int warm_ratio = r_hi * 1024 / b_hi;
+        wbs += COERCE((warm_ratio - 777) * 16 / 777, 0, 3);
+    }
+    wbs = COERCE(wbs, 0, 9);
+    if (wbs != lens_info.wbs_ba)
+        lens_set_wbs_ba(wbs);
+
     return 1;
 }
 
@@ -677,10 +689,11 @@ static int ai_lut_log(void)
     snprintf(line, sizeof(line),
         "\nHistSrc=disp\nScene=%s\nLightLevel=%d\nLightSrc=%s"
         "\nRawMed=%d\nRawP99=%d\nRawR=%d\nRawB=%d\nWbConf=%d"
-        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nLens=%d\nFileNum=%d\n---\n",
+        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nWbs=%d\nLens=%d\nFileNum=%d\n---\n",
         scene, light, (ai_light_src ? "raw" : "disp"),
         ai_raw_med, ai_raw_p99, r_med, b_med, ai_wb_conf,
-        shutter_ms, iso, wr, wg, wbb, (int) lens_info.lens_id, fnum);
+        shutter_ms, iso, wr, wg, wbb, (int) lens_info.wbs_ba,
+        (int) lens_info.lens_id, fnum);
     FIO_WriteFile(f, line, strlen(line));
 
     FIO_CloseFile(f);

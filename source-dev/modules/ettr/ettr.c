@@ -2038,8 +2038,8 @@ static struct menu_entry ettr_menu[] =
                 .priv = &ai_wb_warmth,
                 .max = 4,
                 .choices = CHOICES("Neutral (white prio)", "A1 warm", "A2 warm (skin)", "A3 warm", "A4 warm"),
-                .help  = "Amber bias for AI White Balance, like Canon's WB A-shift.",
-                .help2 = "0 forces whites pure (reads cold); A2 flatters skin tones.",
+                .help  = "Base amber on Canon's WB Shift; gains stay neutral science.",
+                .help2 = "Golden/warm light auto-adds up to A3 more so sun rays stay warm.",
             },
             {
                 .name = "AI Picture Tune",
