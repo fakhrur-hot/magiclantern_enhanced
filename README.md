@@ -22,10 +22,21 @@ offline and is not part of the on-camera code.
   each half-press (RAW-histogram light level, per-channel percentiles,
   ISO/shutter/WB, file number) for offline training.
 - **AI White Balance** — confidence-clipped bright-pixels auto-WB from the RAW
-  channels; neutralizes real white highlights without forcing dim ones. Affects
-  RAW (as-shot) + JPEG.
-- **AI Picture Tune** — per-lens Canon contrast/saturation from
-  `ML/models/lens_tune.tbl`, for a uniform look across lenses. JPEG only.
+  channels. Neutralizes real white highlights without forcing dim ones; a
+  CLAHE-style shadow clip keeps sensor-noise ratios in the dark from ever
+  driving a color cast (deep shadows glide to the sensor's daylight prior, so
+  no blue tint can survive). Runs in both LiveView and, for OVF shooters, from
+  the just-taken photo during image review. Affects RAW (as-shot) + JPEG.
+- **AI WB Warmth** — the neutral gains carry the science; a separate amber bias
+  rides **Canon's own WB Shift (B/A)**, exactly how Canon separates White
+  Priority from Ambience Priority. A gentle default warms skin tones, and warm
+  light (golden hour) is detected at the highlights and kept warm automatically.
+- **AI Lens Tune** — an on-camera editor (modeled on Canon's per-lens AFMA
+  memory) for each lens's row in `ML/models/lens_tune.tbl`: picture-style
+  contrast/saturation/tone, a per-lens ETTR **exposure bias**, and per-lens WB
+  trims. Values auto-load on every lens swap; **Save** writes the row (marked so
+  offline training preserves your hand-tuning). Normalizes exposure and color
+  across a mixed lens kit.
 - **AI Modes** — restricts the whole system to **P, M** or **P, M, Av, Tv**. In
   Av your aperture is never overwritten; in Tv your shutter is never overwritten;
   in M the AI has full control.
