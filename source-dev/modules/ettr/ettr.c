@@ -86,6 +86,10 @@ static int ai_mode_covered(void)
 static int debug_info = 0;
 static int show_metered_areas = 0;
 
+/* one AI log record per half-press; shared between the LiveView polling path
+ * and the OVF image-review (QR) path so they never double-log a shot */
+static int ai_logged_press = 0;
+
 #define AUTO_ETTR_TRIGGER_ALWAYS_ON (auto_ettr_trigger == 0 || is_intervalometer_running())
 #define AUTO_ETTR_TRIGGER_AUTO_SNAP (auto_ettr_trigger == 1)
 #define AUTO_ETTR_TRIGGER_PHOTO (AUTO_ETTR_TRIGGER_ALWAYS_ON || AUTO_ETTR_TRIGGER_AUTO_SNAP)
@@ -1638,6 +1642,30 @@ static MENU_SELECT_FUNC(auto_ettr_max_shutter_toggle)
     }
 }
 
+/* AI WB + data logging for OVF shooters: there is no LiveView raw to meter,
+ * so meter the picture just taken during Canon image review -- the same
+ * reactive pattern as ETTR's photo path. The captured photo is actually the
+ * best WB source there is (it IS the scene). Runs in a task because the raw
+ * buffer can lag the QR event (retry, like auto_ettr_photo_task). */
+static volatile int ai_qr_running = 0;
+static void ai_qr_task(int unused)
+{
+    int ok = 0;
+    for (int i = 0; i < 10 && !ok; i++)
+    {
+        ok = raw_update_params();
+        if (!ok) msleep(50);
+    }
+    if (ok)
+    {
+        if (ai_white_balance)
+            ai_white_point_wb(ai_wb_warmth);
+        if (ai_data_logging && ai_lut_log())
+            ai_logged_press = 1;   /* the LV path won't log this press again */
+    }
+    ai_qr_running = 0;
+}
+
 PROP_HANDLER(PROP_GUI_STATE)
 {
     if (buf[0] == GUISTATE_QR)
@@ -1647,6 +1675,14 @@ PROP_HANDLER(PROP_GUI_STATE)
          * Requires Canon image review enabled (same as the other photo triggers). */
         if (AUTO_ETTR_TRIGGER_PHOTO || AUTO_ETTR_TRIGGER_BY_HALFSHUTTER)
             auto_ettr_step();
+
+        /* AI WB + logging from the just-taken photo (OVF path) */
+        if (!lv && ai_mode_covered() && (ai_white_balance || ai_data_logging)
+            && !ai_qr_running)
+        {
+            ai_qr_running = 1;
+            task_create("ai_qr_task", 0x1c, 0x1000, ai_qr_task, (void*) 0);
+        }
     }
 }
 
@@ -1789,7 +1825,6 @@ static unsigned int auto_ettr_polling_cbr()
      * logging on the edge caught inconsistent snapshots (ISO=0 or LightLevel=128
      * fallback). Independent of the optimizer, so AI-off ground-truth passes log
      * native metering. Histogram is only meaningful in LiveView. */
-    static int ai_logged_press = 0;
     if (!get_halfshutter_pressed())
     {
         ai_logged_press = 0;

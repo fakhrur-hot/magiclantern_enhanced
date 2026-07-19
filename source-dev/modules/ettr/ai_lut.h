@@ -397,9 +397,9 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
      * influence. Channel ratios computed near the noise floor are pure noise
      * (a real field failure: RawMed=6, RawR=3, RawB=3 -> r/g=0.5 -> gains
      * slammed blue). Weight the gray anchor by how far the green median sits
-     * above the noise floor: 0 at <= span/128 (total black: the anchor is
-     * DISABLED, WB cannot drift), full at >= span/16. */
-    int wsh = (g[2] - span / 128) * 256 / (span / 16 - span / 128);
+     * above the noise floor: 0 at <= span/64 (dark: the anchor is DISABLED,
+     * WB cannot drift), full only at >= span/8 (solid midtones). */
+    int wsh = (g[2] - span / 64) * 256 / (span / 8 - span / 64);
     wsh = COERCE(wsh, 0, 256);
     if (r[2] < 1 || b[2] < 1) wsh = 0;   /* channel medians unusable */
 
@@ -453,7 +453,7 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     if (conf >= 64 && b_hi > 0)
     {
         int warm_ratio = r_hi * 1024 / b_hi;
-        wbs += COERCE((warm_ratio - 777) * 16 / 777, 0, 3);
+        wbs += COERCE((warm_ratio - 777) * 20 / 777, 0, 4);
     }
     wbs = COERCE(wbs, 0, 9);
     if (wbs != lens_info.wbs_ba)
