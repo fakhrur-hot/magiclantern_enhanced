@@ -303,11 +303,18 @@ static int ai_lens_ev8 = 0;      /* ETTR target bias for this lens, 1/8 EV */
 static int ai_lens_wbr = 1024;   /* AI WB red-gain trim, 1024 = 1.0x */
 static int ai_lens_wbb = 1024;   /* AI WB blue-gain trim */
 
+/* where the current values came from: for the AI Lens Tune menu header */
+#define AI_LENS_SRC_NONE   0     /* no row -> neutral defaults */
+#define AI_LENS_SRC_TABLE  1     /* row from the table (AI-trained/shipped) */
+#define AI_LENS_SRC_USER   2     /* row saved from the menu (#user marker) */
+static int ai_lens_src = AI_LENS_SRC_NONE;
+
 static void ai_lens_tune_reset(void)
 {
     ai_lens_ev8 = 0;
     ai_lens_wbr = 1024;
     ai_lens_wbb = 1024;
+    ai_lens_src = AI_LENS_SRC_NONE;
 }
 
 /* --------------------------------------------------------------------------
@@ -468,7 +475,13 @@ static int ai_lens_tune_load(void)
                 v[4] = nf >= 6 ? COERCE(atoi(f[5]), 512, 2048) : 1024;
                 v[5] = nf >= 7 ? COERCE(atoi(f[6]), 512, 2048) : 1024;
                 int id = atoi(f[0]);
-                if (id == cur)   { memcpy(row, v, sizeof(row)); found = 1; }
+                if (id == cur)
+                {
+                    memcpy(row, v, sizeof(row)); found = 1;
+                    /* menu-saved rows carry a "#user" marker after the fields */
+                    ai_lens_src = strstr(f[nf-1], "#user") ? AI_LENS_SRC_USER
+                                                           : AI_LENS_SRC_TABLE;
+                }
                 else if (id == 0){ memcpy(def, v, sizeof(def)); have_def = 1; }
             }
         }
@@ -476,11 +489,70 @@ static int ai_lens_tune_load(void)
         p = nl;
         while (*p == '\n' || *p == '\r') p++;
     }
-    if (!found && have_def) { memcpy(row, def, sizeof(row)); found = 1; }
+    if (!found && have_def)
+    {
+        memcpy(row, def, sizeof(row));
+        found = 1;
+        ai_lens_src = AI_LENS_SRC_TABLE;   /* generic default row */
+    }
     if (!found) return 0;
 
     ai_lens_c = row[0]; ai_lens_s = row[1]; ai_lens_t = row[2];
     ai_lens_ev8 = row[3]; ai_lens_wbr = row[4]; ai_lens_wbb = row[5];
+    return 1;
+}
+
+/* Write the current tune values back to lens_tune.tbl as the row for the
+ * mounted lens (replacing any existing row for that id), marked "#user" so
+ * offline training knows to preserve it. Returns 1 on success. */
+static int ai_lens_tune_save(void)
+{
+    static char buf[2048];
+    static char out[2048];
+    int cur = (int) lens_info.lens_id;
+
+    char row[80];
+    snprintf(row, sizeof(row), "%d|%d|%d|%d|%d|%d|%d  #user\n",
+             cur, ai_lens_c, ai_lens_s, ai_lens_t,
+             ai_lens_ev8, ai_lens_wbr, ai_lens_wbb);
+    int rl = strlen(row);
+
+    int rc = read_file(AI_LENS_TUNE_PATH, buf, (int) sizeof(buf) - 1);
+    if (rc < 0) rc = 0;                    /* no file yet -> create fresh */
+    if (rc > (int) sizeof(buf) - 1) rc = sizeof(buf) - 1;
+    buf[rc] = 0;
+
+    /* copy every line except an existing row for this lens id */
+    int on = 0;
+    char * p = buf;
+    while (*p)
+    {
+        char * nl = p;
+        while (*nl && *nl != '\n') nl++;
+        int ll = nl - p + (*nl == '\n' ? 1 : 0);
+        int skip = 0;
+        int has_pipe = 0;
+        for (char * q = p; q < nl; q++) if (*q == '|') { has_pipe = 1; break; }
+        if (*p != '#' && has_pipe && atoi(p) == cur)
+            skip = 1;                      /* replaced by the new row below */
+        if (!skip)
+        {
+            if (on + ll >= (int) sizeof(out) - rl - 1) return 0;  /* too big */
+            memcpy(out + on, p, ll);
+            on += ll;
+        }
+        p = nl + (*nl == '\n' ? 1 : 0);
+    }
+    if (on > 0 && out[on-1] != '\n') out[on++] = '\n';
+    memcpy(out + on, row, rl);
+    on += rl;
+
+    FILE * f = FIO_CreateFile(AI_LENS_TUNE_PATH);
+    if (!f) return 0;
+    FIO_WriteFile(f, out, on);
+    FIO_CloseFile(f);
+
+    ai_lens_src = AI_LENS_SRC_USER;
     return 1;
 }
 

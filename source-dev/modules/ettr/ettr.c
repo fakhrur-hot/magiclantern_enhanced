@@ -1826,11 +1826,78 @@ static MENU_SELECT_FUNC(debug_info_toggle)
     else console_hide();
 }
 
+/* --- AI Lens Tune: on-camera editor for ML/models/lens_tune.tbl ------------
+ * Values shown/edited are the LIVE tune for the mounted lens (auto-loaded on
+ * every lens swap). "Save for this lens" persists them as that lens's row,
+ * marked #user so offline training preserves hand-tuned rows. */
+
+static MENU_UPDATE_FUNC(ai_lens_tune_menu_update)
+{
+    if (lens_info.name[0])
+        MENU_SET_VALUE("%s", lens_info.name);
+    else
+        MENU_SET_VALUE("(no lens)");
+    MENU_SET_RINFO("%s",
+        ai_lens_src == AI_LENS_SRC_USER  ? "custom" :
+        ai_lens_src == AI_LENS_SRC_TABLE ? "table"  : "neutral");
+    if (!lens_info.lens_id)
+        MENU_SET_WARNING(MENU_WARN_INFO,
+            "No electronic lens ID: edits use the default row (id 0).");
+}
+
+static MENU_UPDATE_FUNC(ai_lens_ev_update)
+{
+    int mev = ai_lens_ev8 * 125;   /* 1/8 EV -> milli-EV, exact */
+    MENU_SET_VALUE("%s%d.%03d EV", mev < 0 ? "-" : "+", ABS(mev)/1000, ABS(mev)%1000);
+    if (ai_lens_ev8)
+        MENU_SET_RINFO("ETTR");
+}
+
+static MENU_UPDATE_FUNC(ai_lens_wbr_update)
+{
+    int v = ai_lens_wbr * 100 / 1024;
+    MENU_SET_VALUE("x%d.%02d", v/100, v%100);
+    if (ai_lens_wbr != 1024)
+        MENU_SET_RINFO(ai_lens_wbr < 1024 ? "warmer" : "cooler");
+}
+
+static MENU_UPDATE_FUNC(ai_lens_wbb_update)
+{
+    int v = ai_lens_wbb * 100 / 1024;
+    MENU_SET_VALUE("x%d.%02d", v/100, v%100);
+    if (ai_lens_wbb != 1024)
+        MENU_SET_RINFO(ai_lens_wbb > 1024 ? "warmer" : "cooler");
+}
+
+/* WB trims step in ~1.6% increments; a click per unit would take forever */
+static MENU_SELECT_FUNC(ai_lens_wb_toggle)
+{
+    menu_numeric_toggle(priv, delta * 16, 512, 2048);
+}
+
+static MENU_SELECT_FUNC(ai_lens_tune_save_select)
+{
+    if (ai_lens_tune_save())
+        NotifyBox(2000, "Saved: lens id %d", (int) lens_info.lens_id);
+    else
+        NotifyBox(2000, "Save FAILED (card / table too big?)");
+    if (ai_picture_tune_en) ai_picture_tune();   /* make edits visible now */
+}
+
+static MENU_SELECT_FUNC(ai_lens_tune_reload_select)
+{
+    if (ai_lens_tune_load())
+        NotifyBox(2000, "Reloaded from lens_tune.tbl");
+    else
+        NotifyBox(2000, "No row for this lens: neutral");
+    if (ai_picture_tune_en) ai_picture_tune();
+}
+
 static struct menu_entry ettr_menu[] =
 {
     {
-        .name = "Auto ETTR", 
-        .priv = &auto_ettr, 
+        .name = "Auto ETTR",
+        .priv = &auto_ettr,
         .update = auto_ettr_update,
         .max = 1,
         .help  = "Auto expose to the right when you shoot RAW.",
@@ -1968,6 +2035,72 @@ static struct menu_entry ettr_menu[] =
                 .max = 1,
                 .help  = "Per-lens contrast/saturation from ML/models/lens_tune.tbl.",
                 .help2 = "JPEG only (picstyle does not affect RAW). Off by default.",
+            },
+            {
+                .name = "AI Lens Tune",
+                .update = ai_lens_tune_menu_update,
+                .select = menu_open_submenu,
+                .icon_type = IT_SUBMENU,
+                .help  = "View/edit this lens's tune row (auto-loaded on lens swap).",
+                .help2 = "Normalize exposure/WB/look across lenses. Save writes the table.",
+                .children = (struct menu_entry[]) {
+                    {
+                        .name = "Lens contrast",
+                        .priv = &ai_lens_c,
+                        .min = -4, .max = 4,
+                        .help = "Picstyle contrast offset for this lens (JPEG only).",
+                    },
+                    {
+                        .name = "Lens saturation",
+                        .priv = &ai_lens_s,
+                        .min = -4, .max = 4,
+                        .help = "Picstyle saturation offset for this lens (JPEG only).",
+                    },
+                    {
+                        .name = "Lens color tone",
+                        .priv = &ai_lens_t,
+                        .min = -4, .max = 4,
+                        .help = "Picstyle color tone for this lens (JPEG only).",
+                    },
+                    {
+                        .name = "Exposure bias",
+                        .priv = &ai_lens_ev8,
+                        .update = ai_lens_ev_update,
+                        .min = -24, .max = 8,
+                        .help  = "Shifts the ETTR exposure target on this lens, 1/8 EV steps.",
+                        .help2 = "Negative = protect highlights (for lenses that bloom them).",
+                    },
+                    {
+                        .name = "WB red trim",
+                        .priv = &ai_lens_wbr,
+                        .update = ai_lens_wbr_update,
+                        .select = ai_lens_wb_toggle,
+                        .min = 512, .max = 2048,
+                        .help  = "Trims AI White Balance red gain for this lens's color cast.",
+                        .help2 = "Below 1.00 = warmer. Only acts while AI White Balance is ON.",
+                    },
+                    {
+                        .name = "WB blue trim",
+                        .priv = &ai_lens_wbb,
+                        .update = ai_lens_wbb_update,
+                        .select = ai_lens_wb_toggle,
+                        .min = 512, .max = 2048,
+                        .help  = "Trims AI White Balance blue gain for this lens's color cast.",
+                        .help2 = "Above 1.00 = warmer. Only acts while AI White Balance is ON.",
+                    },
+                    {
+                        .name = "Save for this lens",
+                        .select = ai_lens_tune_save_select,
+                        .help  = "Write these values to lens_tune.tbl as this lens's row.",
+                        .help2 = "Marked #user: offline training keeps your hand-tuned rows.",
+                    },
+                    {
+                        .name = "Reload from table",
+                        .select = ai_lens_tune_reload_select,
+                        .help = "Discard edits; reload this lens's saved row (or neutral).",
+                    },
+                    MENU_EOL,
+                },
             },
             {
                 .name = "Show debug info",
