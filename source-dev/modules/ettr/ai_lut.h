@@ -23,6 +23,10 @@ extern void picstyle_set_current_color_tone(int value);
 #define AI_LUT_PATH    "ML/models/unified.tbl"
 #define AI_LENS_TUNE_PATH "ML/models/lens_tune.tbl"
 #define AI_WB_NEUTRAL  1024   /* lens_set_custom_wb_gains scale: 1024 = 1.0x */
+/* daylight AsShotNeutral for this sensor family x1024 (src/chdk-dng.c) --
+ * the fallback WB prior when a scene is too dark to measure */
+#define AI_WB_DAY_R    485
+#define AI_WB_DAY_B    639
 #define AI_LUT_MAXROWS 128
 #define AI_LUT_BUFSZ   8192   /* single FIO_ReadFile cap; keep the LUT < 8 KB */
 
@@ -403,21 +407,19 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     wsh = COERCE(wsh, 0, 256);
     if (r[2] < 1 || b[2] < 1) wsh = 0;   /* channel medians unusable */
 
-    int r_md = cur_r, b_md = cur_b;
+    /* Daylight prior (this sensor's daylight AsShotNeutral x1024, chdk-dng.c:
+     * r 0.4736 b 0.624). As the shadows clip the gray anchor to zero, fade to
+     * DAYLIGHT -- not to "keep current": keeping the current gains preserved
+     * whatever cast they carried (field case: gains cooler than daylight,
+     * frozen by dark scenes -> permanent blue in the dark-mid JPEG bands).
+     * Total black now glides WB to sane daylight instead. */
+    int r_md = AI_WB_DAY_R, b_md = AI_WB_DAY_B;
     if (wsh > 0)
     {
-        /* shadow-weighted gray anchor: fades to "keep current" in the dark */
         int r_gw = AI_WB_NEUTRAL * r[2] / g[2];
         int b_gw = AI_WB_NEUTRAL * b[2] / g[2];
-        r_md = (r_gw * wsh + cur_r * (256 - wsh)) / 256;
-        b_md = (b_gw * wsh + cur_b * (256 - wsh)) / 256;
-    }
-
-    /* nothing trustworthy metered at all -> leave WB alone entirely */
-    if (conf == 0 && wsh == 0)
-    {
-        ai_wb_conf = 0;
-        return 1;   /* metered, deliberately unchanged (don't retry-spin) */
+        r_md = (r_gw * wsh + AI_WB_DAY_R * (256 - wsh)) / 256;
+        b_md = (b_gw * wsh + AI_WB_DAY_B * (256 - wsh)) / 256;
     }
 
     /* confidence-clipped blend (scene-adaptive Shades-of-Gray) */
