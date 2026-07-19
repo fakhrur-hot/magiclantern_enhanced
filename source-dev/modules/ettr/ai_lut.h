@@ -393,13 +393,31 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     int r_hi = AI_WB_NEUTRAL * r[1] / g[1];
     int b_hi = AI_WB_NEUTRAL * b[1] / g[1];
 
-    /* gray-world estimate at the medians; if the scene is too dark for a
-     * meaningful median, fall back to "keep current" */
+    /* Gray-world estimate at the medians -- CLAHE-style clip on shadow
+     * influence. Channel ratios computed near the noise floor are pure noise
+     * (a real field failure: RawMed=6, RawR=3, RawB=3 -> r/g=0.5 -> gains
+     * slammed blue). Weight the gray anchor by how far the green median sits
+     * above the noise floor: 0 at <= span/128 (total black: the anchor is
+     * DISABLED, WB cannot drift), full at >= span/16. */
+    int wsh = (g[2] - span / 128) * 256 / (span / 16 - span / 128);
+    wsh = COERCE(wsh, 0, 256);
+    if (r[2] < 1 || b[2] < 1) wsh = 0;   /* channel medians unusable */
+
     int r_md = cur_r, b_md = cur_b;
-    if (g[2] >= 8 && r[2] >= 1 && b[2] >= 1)
+    if (wsh > 0)
     {
-        r_md = AI_WB_NEUTRAL * r[2] / g[2];
-        b_md = AI_WB_NEUTRAL * b[2] / g[2];
+        /* shadow-weighted gray anchor: fades to "keep current" in the dark */
+        int r_gw = AI_WB_NEUTRAL * r[2] / g[2];
+        int b_gw = AI_WB_NEUTRAL * b[2] / g[2];
+        r_md = (r_gw * wsh + cur_r * (256 - wsh)) / 256;
+        b_md = (b_gw * wsh + cur_b * (256 - wsh)) / 256;
+    }
+
+    /* nothing trustworthy metered at all -> leave WB alone entirely */
+    if (conf == 0 && wsh == 0)
+    {
+        ai_wb_conf = 0;
+        return 1;   /* metered, deliberately unchanged (don't retry-spin) */
     }
 
     /* confidence-clipped blend (scene-adaptive Shades-of-Gray) */
