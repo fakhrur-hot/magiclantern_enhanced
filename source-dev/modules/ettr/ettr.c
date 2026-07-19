@@ -58,6 +58,10 @@ static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 0);
  * JPEG-only (picstyle does not touch RAW). Default OFF. */
 static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 0);
 
+/* AI WB target warmth, in ~Canon-A-shift steps (0 = pure neutral "White
+ * priority"; default 2 = gentle "Ambience priority" amber for skin tones). */
+static CONFIG_INT("auto.ettr.ai.wb.warmth", ai_wb_warmth, 2);
+
 /* Which shooting modes the whole AI system acts in.
  *   0 = P, M        (default)
  *   1 = P, M, Av, Tv
@@ -1747,7 +1751,7 @@ static unsigned int auto_ettr_polling_cbr()
     static int ai_wb_done = 0;
     int ai_metered = 0;   /* did a raw-metering action run this poll? */
     if (!get_halfshutter_pressed()) ai_wb_done = 0;
-    else if (ai_on && ai_white_balance && !ai_wb_done && ai_white_point_wb())
+    else if (ai_on && ai_white_balance && !ai_wb_done && ai_white_point_wb(ai_wb_warmth))
     {
         ai_wb_done = 1;
         ai_metered = 1;
@@ -2030,6 +2034,14 @@ static struct menu_entry ettr_menu[] =
                 .help2 = "Dim/clipped highlights are NOT forced white. Glides per press.",
             },
             {
+                .name = "AI WB Warmth",
+                .priv = &ai_wb_warmth,
+                .max = 4,
+                .choices = CHOICES("Neutral (white prio)", "A1 warm", "A2 warm (skin)", "A3 warm", "A4 warm"),
+                .help  = "Amber bias for AI White Balance, like Canon's WB A-shift.",
+                .help2 = "0 forces whites pure (reads cold); A2 flatters skin tones.",
+            },
+            {
                 .name = "AI Picture Tune",
                 .priv = &ai_picture_tune_en,
                 .max = 1,
@@ -2152,6 +2164,7 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(auto_iso_optimizer)
     MODULE_CONFIG(ai_data_logging)
     MODULE_CONFIG(ai_white_balance)
+    MODULE_CONFIG(ai_wb_warmth)
     MODULE_CONFIG(ai_picture_tune_en)
     MODULE_CONFIG(ai_modes)
     MODULE_CONFIG(auto_ettr_trigger)

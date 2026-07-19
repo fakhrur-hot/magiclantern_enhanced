@@ -355,7 +355,7 @@ static int ai_wb_conf = -1;
  *  - Temporal damping + per-press step clip: gains glide toward the estimate
  *    (halfway per half-press, max +/-160/press) instead of jumping.
  * Integer-only. Gains are AsShotNeutral-style (1024 = channel/green ratio). */
-static int ai_white_point_wb(void)
+static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
 {
     int r[3], g[3], b[3];
     if (!ai_channel_stats(GRAY_PROJECTION_RED, r))   return 0;
@@ -409,6 +409,14 @@ static int ai_white_point_wb(void)
     /* per-lens color-cast trim (lens_tune.tbl); damping/clamps below still rule */
     r_est = r_est * ai_lens_wbr / 1024;
     b_est = b_est * ai_lens_wbb / 1024;
+
+    /* global warmth bias (menu "AI WB Warmth"): pure white-point AWB is Canon's
+     * "White priority" -- technically neutral, but it strips the ambience and
+     * reads cold, especially on skin. Bias the target amber like Canon's
+     * default "Ambience priority" + WB A-shift: ~2.5% per step (suppression
+     * scale: lower R gain and higher B gain = warmer). */
+    r_est = r_est * (1024 - 26 * warmth) / 1024;
+    b_est = b_est * (1024 + 26 * warmth) / 1024;
 
     /* temporal damping: glide halfway toward the estimate, step-clipped */
     int new_r = cur_r + (r_est - cur_r) / 2;
