@@ -18,3 +18,4 @@ logs/*.txt
 
 # Model training is internal/proprietary -- never commit or reference in docs
 colab/
+recovered_photos/

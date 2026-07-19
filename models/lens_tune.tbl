@@ -24,4 +24,5 @@
 # Tamron SP AF 20-40mm f/2.7-3.5 Aspherical (IF) -- reports id 160, "21-39mm".
 # Blooms highlights (~+1 EV vs metered target, IMG_5296-5299 2026-07-19) and
 # leans cold. ev -8 = meter 1 EV more protective; WB warmed ~6%.
-160|0|0|1|-8|960|1088
+160|-1|0|1|-8|960|1152  #user
+228|-1|0|0|0|1024|1024  #user
