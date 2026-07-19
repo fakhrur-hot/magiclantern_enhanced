@@ -1,20 +1,27 @@
-# Per-lens picture tune for AI Picture Tune (JPEG only -- does not affect RAW).
-# Read by the firmware (modules/ettr/ai_lut.h -> ai_picture_tune) when the
-# "AI Picture Tune" menu toggle is ON, and applied via Canon's picture-style
-# contrast/saturation/color-tone whenever the mounted lens changes.
+# Per-lens tune for the AI exposure/color system.
+# Read by the firmware (modules/ettr/ai_lut.h -> ai_lens_tune_load) whenever
+# the mounted lens changes while the AI is active.
 #
-# Format:  lens_id|contrast|saturation|color_tone
-#   lens_id       Canon lens id (see ML: lens_info.lens_id; shown in ML lens
-#                 info / Debug). lens_id 0 = DEFAULT applied to any unlisted lens.
-#   contrast      -4..4  (uniform-contrast offset for this lens)
-#   saturation    -4..4
-#   color_tone    -4..4  (amber<->magenta)
+# Format:  lens_id|contrast|saturation|color_tone[|ev_bias|wb_r|wb_b]
+#   lens_id       Canon lens id (see ML: lens_info.lens_id; also logged as
+#                 Lens= in unified_log.txt). lens_id 0 = DEFAULT for any
+#                 unlisted lens.
+#   contrast      -4..4   picture-style offsets, JPEG only -- applied when the
+#   saturation    -4..4   "AI Picture Tune" menu toggle is ON
+#   color_tone    -4..4
+#   ev_bias       optional, 1/8 EV added to the ETTR exposure target (RAW).
+#                 Negative = protect highlights: -8 meters this lens 1 EV
+#                 lower. Range -24..8. Applied whenever AI modes cover the
+#                 current shooting mode.
+#   wb_r, wb_b    optional AI White Balance trims, 1024 = 1.0x (only active
+#                 with "AI White Balance" ON). Suppression scale: wb_r < 1024
+#                 warms (more red), wb_b > 1024 warms (less blue).
 #
-# Goal: give different lenses a UNIFORM rendered contrast/saturation. Populate
-# one row per lens as you shoot; the firmware clamps every value to -4..4.
+# Old 4-column rows stay valid (no exposure/WB change).
 #
-# lens_id 0 = default (neutral). Replace/add rows with your measured offsets.
+# lens_id 0 = default (neutral).
 0|0|0|0
-# --- examples (edit lens_id + values for YOUR glass) ---
-# 61494|1|0|0     # e.g. a lower-contrast vintage lens -> +1 contrast
-# 61182|-1|1|0    # e.g. a punchy modern lens -> -1 contrast, +1 saturation
+# Tamron SP AF 20-40mm f/2.7-3.5 Aspherical (IF) -- reports id 160, "21-39mm".
+# Blooms highlights (~+1 EV vs metered target, IMG_5296-5299 2026-07-19) and
+# leans cold. ev -8 = meter 1 EV more protective; WB warmed ~6%.
+160|0|0|1|-8|960|1088

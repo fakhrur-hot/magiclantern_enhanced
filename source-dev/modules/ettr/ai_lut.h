@@ -291,6 +291,26 @@ static int ai_lut_apply(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Per-lens tune state, loaded from lens_tune.tbl on lens change. Optional
+ * columns 5-7 extend the picstyle row with exposure/WB lens corrections:
+ *   lens_id|contrast|saturation|color_tone[|ev_bias_8ths|wb_r_trim|wb_b_trim]
+ * ev_bias: added to the ETTR exposure target, in 1/8 EV (negative = protect
+ * highlights; e.g. -8 = expose 1 EV lower on this lens). wb trims: multiply
+ * the AI white-balance gains, 1024 = 1.0x (suppression scale: r<1024 warms,
+ * b>1024 warms). 4-column rows keep the defaults (no exposure/WB change).
+ * -------------------------------------------------------------------------- */
+static int ai_lens_ev8 = 0;      /* ETTR target bias for this lens, 1/8 EV */
+static int ai_lens_wbr = 1024;   /* AI WB red-gain trim, 1024 = 1.0x */
+static int ai_lens_wbb = 1024;   /* AI WB blue-gain trim */
+
+static void ai_lens_tune_reset(void)
+{
+    ai_lens_ev8 = 0;
+    ai_lens_wbr = 1024;
+    ai_lens_wbb = 1024;
+}
+
+/* --------------------------------------------------------------------------
  * Item 1: White-point white balance. Measure the brightest highlights per RAW
  * channel (95th percentile, black-subtracted) and set custom WB gains so a
  * neutral highlight renders R=G=B -- "pure white at the whitest highlights".
@@ -379,6 +399,10 @@ static int ai_white_point_wb(void)
     int r_est = (r_hi * conf + r_md * (256 - conf)) / 256;
     int b_est = (b_hi * conf + b_md * (256 - conf)) / 256;
 
+    /* per-lens color-cast trim (lens_tune.tbl); damping/clamps below still rule */
+    r_est = r_est * ai_lens_wbr / 1024;
+    b_est = b_est * ai_lens_wbb / 1024;
+
     /* temporal damping: glide halfway toward the estimate, step-clipped */
     int new_r = cur_r + (r_est - cur_r) / 2;
     int new_b = cur_b + (b_est - cur_b) / 2;
@@ -397,20 +421,31 @@ static int ai_white_point_wb(void)
  * Item 2: Per-lens picture tune. Read ML/models/lens_tune.tbl and set Canon
  * picture-style contrast/saturation/color-tone for the current lens, so
  * different lenses render with uniform contrast/saturation.
- * Format: lens_id|contrast|saturation|color_tone   (each -4..4; lens_id 0 =
- * default fallback). JPEG-only (picstyle does not affect RAW).
+ * Format: lens_id|contrast|saturation|color_tone[|ev_bias|wb_r|wb_b]
+ * (picstyle values -4..4; lens_id 0 = default fallback; optional columns
+ * feed ai_lens_ev8 / ai_lens_wbr / ai_lens_wbb -- see above). Picstyle is
+ * JPEG-only; ev_bias steers the metered ETTR target (RAW exposure); wb trims
+ * steer the AI white balance (RAW as-shot + JPEG).
  * -------------------------------------------------------------------------- */
-static void ai_picture_tune(void)
+static int ai_lens_c = 0, ai_lens_s = 0, ai_lens_t = 0;
+
+/* Parse lens_tune.tbl for the mounted lens (exact id, else default row 0).
+ * Always resets to neutral first, so a missing file/row means "no change".
+ * Returns 1 if a row matched. */
+static int ai_lens_tune_load(void)
 {
     static char buf[2048];
+    ai_lens_tune_reset();
+    ai_lens_c = ai_lens_s = ai_lens_t = 0;
+
     int rc = read_file(AI_LENS_TUNE_PATH, buf, (int) sizeof(buf) - 1);
-    if (rc <= 0) return;
+    if (rc <= 0) return 0;
     if (rc > (int) sizeof(buf) - 1) rc = sizeof(buf) - 1;
     buf[rc] = 0;
 
     int cur = (int) lens_info.lens_id;
-    int c = 0, s = 0, t = 0, found = 0;
-    int dc = 0, ds = 0, dt = 0, have_def = 0;
+    /* row = {contrast, saturation, tone, ev8, wbr, wbb} */
+    int row[6], def[6], found = 0, have_def = 0;
 
     char * p = buf;
     while (*p && !found)
@@ -421,27 +456,40 @@ static void ai_picture_tune(void)
         *nl = 0;
         if (*p != '#' && strchr(p, '|'))
         {
-            char * f[4];
-            if (ai_split(p, f, 4) >= 4)
+            char * f[7];
+            int nf = ai_split(p, f, 7);
+            if (nf >= 4)
             {
+                int v[6];
+                v[0] = COERCE(atoi(f[1]), -4, 4);
+                v[1] = COERCE(atoi(f[2]), -4, 4);
+                v[2] = COERCE(atoi(f[3]), -4, 4);
+                v[3] = nf >= 5 ? COERCE(atoi(f[4]), -24, 8)    : 0;
+                v[4] = nf >= 6 ? COERCE(atoi(f[5]), 512, 2048) : 1024;
+                v[5] = nf >= 7 ? COERCE(atoi(f[6]), 512, 2048) : 1024;
                 int id = atoi(f[0]);
-                int cc = COERCE(atoi(f[1]), -4, 4);
-                int ss = COERCE(atoi(f[2]), -4, 4);
-                int tt = COERCE(atoi(f[3]), -4, 4);
-                if (id == cur)   { c = cc; s = ss; t = tt; found = 1; }
-                else if (id == 0){ dc = cc; ds = ss; dt = tt; have_def = 1; }
+                if (id == cur)   { memcpy(row, v, sizeof(row)); found = 1; }
+                else if (id == 0){ memcpy(def, v, sizeof(def)); have_def = 1; }
             }
         }
         *nl = saved;
         p = nl;
         while (*p == '\n' || *p == '\r') p++;
     }
-    if (!found && have_def) { c = dc; s = ds; t = dt; found = 1; }
-    if (!found) return;
+    if (!found && have_def) { memcpy(row, def, sizeof(row)); found = 1; }
+    if (!found) return 0;
 
-    picstyle_set_current_contrast(c);
-    picstyle_set_current_saturation(s);
-    picstyle_set_current_color_tone(t);
+    ai_lens_c = row[0]; ai_lens_s = row[1]; ai_lens_t = row[2];
+    ai_lens_ev8 = row[3]; ai_lens_wbr = row[4]; ai_lens_wbb = row[5];
+    return 1;
+}
+
+static void ai_picture_tune(void)
+{
+    if (!ai_lens_tune_load()) return;
+    picstyle_set_current_contrast(ai_lens_c);
+    picstyle_set_current_saturation(ai_lens_s);
+    picstyle_set_current_color_tone(ai_lens_t);
 }
 
 /* --------------------------------------------------------------------------
@@ -531,10 +579,10 @@ static int ai_lut_log(void)
     snprintf(line, sizeof(line),
         "\nHistSrc=disp\nScene=%s\nLightLevel=%d\nLightSrc=%s"
         "\nRawMed=%d\nRawP99=%d\nRawR=%d\nRawB=%d\nWbConf=%d"
-        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nFileNum=%d\n---\n",
+        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nLens=%d\nFileNum=%d\n---\n",
         scene, light, (ai_light_src ? "raw" : "disp"),
         ai_raw_med, ai_raw_p99, r_med, b_med, ai_wb_conf,
-        shutter_ms, iso, wr, wg, wbb, fnum);
+        shutter_ms, iso, wr, wg, wbb, (int) lens_info.lens_id, fnum);
     FIO_WriteFile(f, line, strlen(line));
 
     FIO_CloseFile(f);

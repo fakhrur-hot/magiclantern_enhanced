@@ -359,6 +359,9 @@ static int auto_ettr_get_correction()
 
     //~ bmp_printf(FONT_MED, 50, 200, "%d ", MEMX(0xc0f08030));
     float target = MIN(auto_ettr_target_level, -0.5);
+    /* per-lens exposure bias from lens_tune.tbl (0 unless a row asks for it --
+     * e.g. a lens known to bloom its highlights meters 1 EV more protective) */
+    target += ai_lens_ev8 / 8.0;
     float correction = target - ev;
     float overexposed_percentage = 0;
     if (ev < -0.1)
@@ -1750,16 +1753,31 @@ static unsigned int auto_ettr_polling_cbr()
         ai_metered = 1;
     }
 
-    /* Item 2: per-lens picture tune, re-applied when the lens changes. */
-    static int ai_last_lens = -1;
-    if (ai_on && ai_picture_tune_en && (int) lens_info.lens_id != ai_last_lens)
+    /* Item 2: per-lens tune. The ev-bias/WB-trim columns load on every lens
+     * change while the AI is active (they steer ETTR/AI-WB, no toggle of their
+     * own); the picstyle push additionally honors the AI Picture Tune toggle. */
+    static int ai_tune_lens = -1;   /* lens the tbl was loaded for */
+    static int ai_pt_lens = -1;     /* lens the picstyle was applied for */
+    int ai_lid = (int) lens_info.lens_id;
+    if (!ai_on)
     {
-        ai_picture_tune();
-        ai_last_lens = (int) lens_info.lens_id;
+        if (ai_tune_lens != -1) ai_lens_tune_reset();   /* AI off -> no bias */
+        ai_tune_lens = ai_pt_lens = -1;
     }
-    else if (!ai_picture_tune_en || !ai_on)
+    else
     {
-        ai_last_lens = -1;   /* re-apply after the user toggles it back on */
+        if (ai_lid != ai_tune_lens)
+        {
+            ai_lens_tune_load();
+            ai_tune_lens = ai_lid;
+        }
+        if (ai_picture_tune_en && ai_lid != ai_pt_lens)
+        {
+            ai_picture_tune();
+            ai_pt_lens = ai_lid;
+        }
+        if (!ai_picture_tune_en)
+            ai_pt_lens = -1;   /* re-apply after the user toggles it back on */
     }
 
     /* AI data logging: log ONCE per half-press, but only once the histogram is
