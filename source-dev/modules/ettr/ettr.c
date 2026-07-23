@@ -20,12 +20,47 @@
 #include <beep.h>
 #include <histogram.h>
 #include <console.h>
+#include <picstyle.h>
 
 /* interface with dual ISO */
 #include "../dual_iso/dual_iso.h"
+
+/* MakerNote IFD value offset for tag TAG_ML_DUALISO_0x0027. Stays at 0 until
+ * a real hex-dump-verified offset is found via exiftool on a captured dual-ISO
+ * CR2. Must be defined before ai_lut.h which references it in ai_sidecar_write().
+ * Used by ai_post_capture_cbr (CBR_POST_SHOOT handler, near end of file). */
+#ifndef AI_MKNOTE_DUALISO_OFFSET_TODO
+#define AI_MKNOTE_DUALISO_OFFSET_TODO 0
+#endif
+
 #include "ai_lut.h"   /* AI-LUT: learned per-scene ISO/WB/ALO/HTP for the optimizer */
 
-static CONFIG_INT("auto.ettr", auto_ettr, 0);
+/* Video gyro/MLV-metadata subsystem (external IMU over hot-shoe serial +
+ * electronic-level + per-frame MLV blocks + mlc.gyro/level Lua bindings).
+ * DISABLED 2026-07-23 after a real field regression: gyro_bridge_poll() runs
+ * every LiveView frame from auto_ettr_vsync_cbr and reads the hot-shoe serial
+ * pins; with a flash mounted on the hot shoe (field case: camera.flash=true)
+ * that repeated probe is a plausible fault/hang source. Symptom on that card:
+ * ML core + lua.mo loaded fine, but ettr's runtime never ran (no sidecar, no
+ * unified_log, no ml_export update, shots stuck on Canon Auto WB) — consistent
+ * with a crash that tripped ML's "disable module auto-load after a crash"
+ * safety. The SAME binary had worked the day before, the only difference being
+ * a flash now on the hot shoe. This subsystem is also the sole reason ettr.mo
+ * hard-imports lua.mo's lua_* symbols, coupling core ETTR's load fate to
+ * lua.mo. Compiling it out (a) removes the per-frame hot-shoe probe, (b) makes
+ * ettr.mo self-contained again (no cross-module lua dependency), restoring the
+ * known-good module shape. The feature was unvalidated and produced no MLV
+ * output in practice. gyro_bridge.o / mlv_metadata.o are also dropped from the
+ * Makefile link so their lua_* imports don't re-enter ettr.mo. Re-enable only
+ * after the hot-shoe-vs-flash conflict is resolved and validated on hardware. */
+#define ETTR_VIDEO_GYRO_METADATA 0
+
+#if ETTR_VIDEO_GYRO_METADATA
+#include "gyro_bridge.h"  /* External IMU + electronic level for video metadata */
+#include "mlv_metadata.h" /* MLV chunk callback for gyro/level in .MLV recordings */
+#endif
+
+CONFIG_INT("auto.ettr", auto_ettr, 0);
 static CONFIG_INT("auto.ettr.trigger", auto_ettr_trigger, 3);
 static CONFIG_INT("auto.ettr.ignore", auto_ettr_ignore, 1);
 /* Default ETTR exposure target: 0 => the aggressive -0.5 EV (firmware clamps the
@@ -220,6 +255,74 @@ static int guess_black_delta(int raw_value_lo, int raw_value_hi, float ev_delta)
 }
 
 /* also used for display on histogram */
+/* ── ML Extended Intelligence: ETTR metadata (spec cr2-intelligence-
+ * integration, Component 7) ────────────────────────────────────────────────
+ * Reuses the SAME raw_hist_get_percentile_levels() statistical sampler the
+ * stock ETTR metering below already calls -- not a second full-frame pixel
+ * scan (Requirement 7.5) -- plus three additional per-channel percentile
+ * queries (GRAY_PROJECTION_RED/GREEN/BLUE) to approximate per-channel clip.
+ * Note: raw_hist_get_percentile_levels() reports the raw LEVEL at a given
+ * percentile rank, not a pixel count above a threshold, so channelClip is a
+ * coarse proxy (the histogram-rank fraction whose level has reached
+ * raw_info.white_level) rather than an exact clipped-pixel-count fraction --
+ * documented limitation, refine against real captures during task 10. */
+static ettr_metadata_t g_last_ettr_meta = { 0, 4.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+
+static float ettr_channel_clip_fraction(int gray_proj_channel, int speed)
+{
+    /* Percentile ladder from coarse (near-max) to fine; find the highest
+     * rank whose raw level still reaches saturation. */
+    int percentiles[6] = {1000, 990, 950, 900, 800, 500};
+    int raw_values[COUNT(percentiles)];
+    if (raw_hist_get_percentile_levels(percentiles, raw_values, COUNT(percentiles),
+            gray_proj_channel | GRAY_PROJECTION_DARK_ONLY, speed) != 1)
+        return 0.0f;
+
+    for (int i = 0; i < (int) COUNT(percentiles); i++)
+    {
+        if (raw_values[i] < raw_info.white_level)
+        {
+            /* everything from percentile[i-1] and up (the previous, higher
+             * rank) reached saturation; rank/1000 approximates the clipped
+             * fraction. i==0 means even the 100th percentile clips fully. */
+            return i == 0 ? 1.0f : (1000.0f - (float) percentiles[i]) / 1000.0f;
+        }
+    }
+    return 0.0f;   /* not even the darkest sampled rank reached saturation */
+}
+
+static void ettr_compute_extended_metadata(int raw_highlight_lo, int raw_shadow_lo, int gray_proj, int speed)
+{
+    if (raw_highlight_lo <= raw_info.black_level || raw_shadow_lo <= raw_info.black_level)
+    {
+        /* Requirement 7.4: fully clipped or fully dark readout. */
+        g_last_ettr_meta = (ettr_metadata_t){ ai_light_level(), 4.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+        return;
+    }
+
+    float scene_dr = log2f((float)(raw_info.white_level - raw_shadow_lo + 1) /
+                            (float)(raw_highlight_lo - raw_info.black_level + 1));
+    float highlight_headroom = log2f((float) raw_info.white_level / (float)(raw_highlight_lo + 1));
+
+    float clip_r = ettr_channel_clip_fraction(GRAY_PROJECTION_RED, speed);
+    float clip_g = ettr_channel_clip_fraction(GRAY_PROJECTION_GREEN, speed);
+    float clip_b = ettr_channel_clip_fraction(GRAY_PROJECTION_BLUE, speed);
+
+    g_last_ettr_meta = (ettr_metadata_t){
+        ai_light_level(),
+        COERCE(scene_dr, 4.0f, 14.0f),
+        COERCE(highlight_headroom, 0.0f, 3.0f),
+        COERCE(clip_r, 0.0f, 1.0f),
+        COERCE(clip_g, 0.0f, 1.0f),
+        COERCE(clip_b, 0.0f, 1.0f),
+    };
+}
+
+ettr_metadata_t ettr_last_metadata(void)
+{
+    return g_last_ettr_meta;
+}
+
 static int auto_ettr_get_correction()
 {
     static int last_value = INT_MIN;
@@ -263,7 +366,9 @@ static int auto_ettr_get_correction()
     int raw_highlight_lo = raw_values[0]; /* "highlight ignore" percentile */
     float ev_median_lo = raw_to_ev(raw_median_lo);
     float ev_shadow_lo = raw_to_ev(raw_shadow_lo);
-    
+
+    ettr_compute_extended_metadata(raw_highlight_lo, raw_shadow_lo, gray_proj, speed);
+
     int dual_iso = auto_ettr_dual_iso_link && dual_iso_is_active();
     float ev_median_hi = ev_median_lo;
     float ev_shadow_hi = ev_shadow_lo; /* for dual ISO: for the bright exposure */
@@ -887,6 +992,12 @@ static void auto_ettr_step_task(int corr)
  * the just-captured raw buffer can lag the review opening by a frame or two, so
  * the old one-shot raw_update_params() failed ("Raw error") and the shot was
  * skipped -- leaving it underexposed. Retry for ~0.5 s before giving up. */
+/* NOTE: AI_MKNOTE_DUALISO_OFFSET_TODO is defined near the top of this file
+ * (before ai_lut.h inclusion). Sidecar write + MakerNote patch are handled
+ * by the file_number-change poll in auto_ettr_polling_cbr (CBR_SHOOT_TASK,
+ * near end of file) -- NOT a CBR_POST_SHOOT handler, which was tried and
+ * confirmed dead on this fork (see that poll's comment for why). */
+
 static void auto_ettr_photo_task(int unused)
 {
     int ok = 0;
@@ -897,6 +1008,10 @@ static void auto_ettr_photo_task(int unused)
     }
     if (ok)
     {
+        /* Sidecar write + MakerNote patch happen from the file_number poll
+         * in auto_ettr_polling_cbr, not here -- covers ALL captures (not
+         * just ETTR ones) with no double-write risk. */
+
         int corr = auto_ettr_get_correction();
         if (corr != INT_MIN)
         {
@@ -910,6 +1025,9 @@ static void auto_ettr_photo_task(int unused)
 /* photo mode only, no LV */
 static void auto_ettr_step()
 {
+    /* NOTE: sidecar/MakerNote export for ALL captures (regardless of ETTR
+     * state) happens via the file_number poll in auto_ettr_polling_cbr, not
+     * here -- this function only drives the ETTR metering/correction loop. */
     if (!auto_ettr) return;
     if (shooting_mode != SHOOTMODE_M && !is_movie_mode() && !is_bulb_mode()) return;
     if (lens_info.raw_iso == 0) return;
@@ -956,6 +1074,9 @@ static volatile int auto_ettr_vsync_counter = 0;
 static unsigned int auto_ettr_vsync_cbr(unsigned int ctx)
 {
     auto_ettr_vsync_counter++;
+#if ETTR_VIDEO_GYRO_METADATA
+    gyro_bridge_poll();  /* Poll external IMU at frame cadence */
+#endif
 
     if (auto_ettr_vsync_active)
     {
@@ -1854,6 +1975,77 @@ static unsigned int auto_ettr_polling_cbr()
     if (ai_metered && !gui_menu_shown())
         console_hide();
 
+    /* Component 4: re-export ML/DATA/ml_export.json whenever dual-ISO,
+     * ETTR, or Picture Style state changes. No dedicated per-toggle menu
+     * callback exists for these CONFIG_INT-backed items (Requirement 4.2's
+     * "existing config-change callbacks" don't exist in this codebase
+     * either -- same gap as the post-capture hook noted above), so this
+     * polling loop (CBR_SHOOT_TASK, sub-second cadence) is the pragmatic
+     * equivalent: it change-detects and rewrites well within the 2-second
+     * budget without hammering the card every tick. */
+    {
+        static int last_dual_iso = -1, last_ettr = -1;
+        static const char * last_style = NULL;
+        int cur_dual_iso = dual_iso_is_enabled();
+        int cur_ettr = auto_ettr;
+        const char * cur_style = ai_picture_style_name();
+        if (cur_dual_iso != last_dual_iso || cur_ettr != last_ettr ||
+            last_style != cur_style)   /* interned literals: pointer compare is enough */
+        {
+            ai_export_session_write();
+            last_dual_iso = cur_dual_iso;
+            last_ettr = cur_ettr;
+            last_style = cur_style;
+        }
+    }
+
+    /* Per-shot .ml6d sidecar + dual-ISO MakerNote patch: fire once for EVERY
+     * new capture, regardless of shooting mode or ETTR state.
+     *
+     * This used to be a CBR_POST_SHOOT module callback (ai_post_capture_cbr),
+     * on the assumption this fork fires that event after every capture like
+     * mainline Magic Lantern does. CONFIRMED WRONG 2026-07-21 by field test:
+     * 4 real CR2 captures, zero .ml6d sidecars ever written, ML/DATA/SHOTS
+     * never even created. Grepping every module_exec_cbr() call site in
+     * src/ shows CBR_PRE_SHOOT/CBR_POST_SHOOT are never invoked anywhere in
+     * this fork's core -- that handler was dead code that could never run.
+     * (Same reason Lua's own event.post_shoot, registered the same way in
+     * lua.c, doesn't work on this build either -- a separate, pre-existing
+     * gap, not something introduced here.)
+     *
+     * Fixed the same way ai_export_session_write() right above already had
+     * to be (see its comment: "no dedicated per-toggle callback exists...
+     * same gap as the post-capture hook"): poll file_number on the
+     * CBR_SHOOT_TASK cadence (proven to actually fire -- this whole function
+     * runs from it) and change-detect a new capture, instead of relying on
+     * a capture-complete event that doesn't exist here. Covers every
+     * capture regardless of mode/ETTR, restoring (and fixing beyond) the
+     * original ETTR-only sidecar limitation, using a mechanism that's
+     * actually proven to run rather than a plausible-looking dead one. */
+    {
+        static int last_sidecar_file_number = -1;
+        struct card_info * card = get_shooting_card();
+        if (card)
+        {
+            /* skip the first observation (module load / card swap) -- that's
+             * the pre-existing last shot on the card, not a new capture */
+            if (last_sidecar_file_number != -1 && card->file_number != last_sidecar_file_number)
+            {
+                char basename[16];
+                snprintf(basename, sizeof(basename), "IMG_%04d", card->file_number);
+                ai_sidecar_write(basename);
+
+                if (AI_MKNOTE_DUALISO_OFFSET_TODO > 0)
+                {
+                    char cr2_name[16];
+                    snprintf(cr2_name, sizeof(cr2_name), "IMG_%04d.CR2", card->file_number);
+                    ai_makernote_dualiso_patch(cr2_name, AI_MKNOTE_DUALISO_OFFSET_TODO);
+                }
+            }
+            last_sidecar_file_number = card->file_number;
+        }
+    }
+
     return 0;
 }
 
@@ -2171,6 +2363,11 @@ static unsigned int ettr_init()
         ettr_menu[0].children[0].max = 1;
     }
     menu_add("Expo", ettr_menu, COUNT(ettr_menu));
+    ai_export_session_write();   /* Component 4: initial ML/DATA/ml_export.json */
+#if ETTR_VIDEO_GYRO_METADATA
+    gyro_bridge_init();          /* Initialize gyro bridge (probes for external IMU) */
+    mlv_metadata_init();         /* Register MLV chunk CBR (no-op if mlv_rec not loaded) */
+#endif
     return 0;
 }
 
@@ -2178,6 +2375,17 @@ static unsigned int ettr_deinit()
 {
     return 0;
 }
+
+#if ETTR_VIDEO_GYRO_METADATA
+/* Electronic level property handler — forwards data to gyro bridge.
+ * This captures Canon's accelerometer pitch/roll data at ~5 Hz for
+ * the mlc.level() Lua binding (Gyroflow orientation metadata). */
+PROP_HANDLER(PROP_ROLLING_PITCHING_LEVEL)
+{
+    extern void gyro_level_prop_handler(unsigned int property, void *buf, unsigned int len);
+    gyro_level_prop_handler(property, (void*)buf, len);
+}
+#endif
 
 MODULE_INFO_START()
     MODULE_INIT(ettr_init)
@@ -2192,6 +2400,9 @@ MODULE_CBRS_END()
 
 MODULE_PROPHANDLERS_START()
     MODULE_PROPHANDLER(PROP_GUI_STATE)
+#if ETTR_VIDEO_GYRO_METADATA
+    MODULE_PROPHANDLER(PROP_ROLLING_PITCHING_LEVEL)
+#endif
 MODULE_PROPHANDLERS_END()
 
 MODULE_CONFIGS_START()

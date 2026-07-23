@@ -44,11 +44,18 @@ $(shell mkdir -p $(BUILD_DIR)/umm_malloc)
 $(shell mkdir -p $(BUILD_DIR)/lua)
 $(shell mkdir -p $(BUILD_DIR)/dietlibc)
 
-# strip all Lua symbols, so we don't export internal Lua routines to other modules
-# (we have nothing interesting to export yet)
-# fixme: how to implement this in a cleaner way?
+# Strip all Lua symbols, so we don't export internal Lua routines to other
+# modules, EXCEPT the handful of Lua C API functions other modules genuinely
+# call cross-module (e.g. ettr.mo's gyro_bridge.c pushes Lua values for the
+# mlc.gyro()/mlc.level() bindings from the video-gyro-metadata feature -- it
+# has no Lua interpreter of its own, so it needs these resolved from lua.mo
+# at runtime). Without this exclusion list, loading a module that calls any
+# of these fails at boot with "tcc: error: undefined symbol '...'" (the
+# on-camera module loader's ELF relocator, embedded from TCC, cannot resolve
+# a symbol that lua.mo has hidden as local).
+LUA_EXPORTED_SYMS = lua_createtable lua_pushinteger lua_pushnumber lua_pushstring lua_setfield
 $(BUILD_DIR)/lua.sym: $(BUILD_DIR)/lua.mo
-	$(READELF) -sW $< | grep GLOBAL | grep -v UND | grep -v COM | grep -v "__module_.*$(MODULE_NAME)" | $(AWK) "{print \$$8;}" | sort > localsyms
+	$(READELF) -sW $< | grep GLOBAL | grep -v UND | grep -v COM | grep -v "__module_.*$(MODULE_NAME)" | $(AWK) "{print \$$8;}" | sort | grep -vxE "$(subst $() ,|,$(LUA_EXPORTED_SYMS))" > localsyms
 	$(OBJCOPY) $(BUILD_DIR)/lua.mo $(BUILD_DIR)/lua.mo --localize-symbols localsyms
 	rm -f localsyms
 	$(READELF) -sW $< | grep GLOBAL | grep -v UND | grep -v COM | grep -v "__module_.*$(MODULE_NAME)" | $(AWK) "{print \$$2 \" \" \$$8;}" | sort > $@ && cat $@

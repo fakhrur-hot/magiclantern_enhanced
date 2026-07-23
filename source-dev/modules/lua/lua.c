@@ -240,9 +240,17 @@ LUA_CBR_FUNC(intervalometer, get_interval_count(), 1000)
 LUA_CBR_FUNC(config_save, ctx, 1000)
 
 #ifdef CONFIG_VSYNC_EVENTS
-LUA_CBR_FUNC(vsync)
-LUA_CBR_FUNC(display_filter)
-LUA_CBR_FUNC(vsync_setparam)
+/* Fires every LiveView frame (module.h: CBR_VSYNC "must not do any heavy
+ * processing!!!") -- timeout 0 means lua_do_cbr's semaphore wait is
+ * non-blocking: if the Lua VM is busy elsewhere, this frame's event is
+ * skipped rather than stalling LiveView. Matches this codebase's existing
+ * "never block or delay capture" principle (see ai_lut.h, sd_uhs.c). These
+ * three calls were missing their (arg, timeout) parameters -- a long-dormant
+ * bug inherited from upstream ML, where CONFIG_VSYNC_EVENTS is never actually
+ * enabled, so this macro invocation had never been compiled until now. */
+LUA_CBR_FUNC(vsync, ctx, 0)
+LUA_CBR_FUNC(display_filter, ctx, 0)
+LUA_CBR_FUNC(vsync_setparam, ctx, 0)
 #endif
 
 static struct script_event_entry * keypress_cbr_scripts = NULL;

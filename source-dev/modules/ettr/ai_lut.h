@@ -12,6 +12,24 @@
  */
 
 #include <fio-ml.h>
+#include <version.h>
+#include <propvalues.h>
+#include <math.h>
+
+/* Forward declarations for symbols this header's Component 4/5 writers
+ * (ai_export_session_write / ai_sidecar_write) need, but that are declared
+ * further down in ettr.c -- this header is included near the TOP of
+ * ettr.c (before auto_ettr / ETTR metadata are defined), so we declare
+ * just enough here rather than reordering the whole file.
+ *   auto_ettr           CONFIG_INT("auto.ettr", ...) -> plain global int.
+ *   ettr_metadata_t /
+ *   ettr_last_metadata  Defined in ettr.c (Component 7); declared here so
+ *                        both the definition site and this header's use
+ *                        site agree on one canonical type. */
+extern int auto_ettr;
+
+typedef struct { int light_level; float scene_dr; float highlight_headroom; float clip_r, clip_g, clip_b; } ettr_metadata_t;
+ettr_metadata_t ettr_last_metadata(void);
 
 /* picstyle setters are declared core-only (FEATURE_PICSTYLE) in picstyle.h, but
  * the symbols ARE exported to modules (present in the core .sym) -- declare the
@@ -306,6 +324,8 @@ static int ai_lut_apply(void)
 static int ai_lens_ev8 = 0;      /* ETTR target bias for this lens, 1/8 EV */
 static int ai_lens_wbr = 1024;   /* AI WB red-gain trim, 1024 = 1.0x */
 static int ai_lens_wbb = 1024;   /* AI WB blue-gain trim */
+static int ai_lens_ca = 0;       /* chromatic aberration correction strength, 0..100 */
+static int ai_lens_fr = 0;       /* purple/green fringe reduction strength, 0..100 */
 
 /* where the current values came from: for the AI Lens Tune menu header */
 #define AI_LENS_SRC_NONE   0     /* no row -> neutral defaults */
@@ -318,8 +338,14 @@ static void ai_lens_tune_reset(void)
     ai_lens_ev8 = 0;
     ai_lens_wbr = 1024;
     ai_lens_wbb = 1024;
+    ai_lens_ca = 0;
+    ai_lens_fr = 0;
     ai_lens_src = AI_LENS_SRC_NONE;
 }
+
+/* Per-lens chromatic aberration profile, returned by ai_lens_tune_ca_lookup()
+ * for the sidecar writer (Component 5, spec cr2-intelligence-integration). */
+typedef struct { int ca_strength; int fringe_reduce; } lens_ca_entry_t;
 
 /* --------------------------------------------------------------------------
  * Item 1: White-point white balance. Measure the brightest highlights per RAW
@@ -342,6 +368,19 @@ static int ai_channel_stats(int gray_proj, int out[3])
 
 /* Confidence (0..256) of the last WB estimate; -1 = none yet. Logged. */
 static int ai_wb_conf = -1;
+
+/* Directional-consistency streak for the per-press step clamp (see damping
+ * block in ai_white_point_wb). Remembers the SIGN of the last applied gain
+ * change per channel and how many consecutive presses pushed the same way.
+ * A genuine persistent cast points the same direction every press, so the
+ * streak grows and the clamp widens -> it converges in a few presses instead
+ * of the geometric half-steps that, in a dim scene, never reach the target
+ * within realistic 1-2 half-press usage (field case: FileNum 5503, dim green
+ * room, gains stuck near neutral at WbConf 82). A noisy/random read flips
+ * direction, resetting the streak to the conservative base step -- preserving
+ * the noise safety this file's history was built around. */
+static int ai_wb_r_sign = 0, ai_wb_r_streak = 0;
+static int ai_wb_b_sign = 0, ai_wb_b_streak = 0;
 
 /* White-point WB v2 -- confidence-clipped bright-pixels estimator.
  *
@@ -430,11 +469,24 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     r_est = r_est * ai_lens_wbr / 1024;
     b_est = b_est * ai_lens_wbb / 1024;
 
-    /* temporal damping: glide halfway toward the estimate, step-clipped */
+    /* temporal damping: glide halfway toward the estimate, step-clipped.
+     * The clamp widens when successive presses keep pointing the SAME way
+     * (a genuine, persistent cast) and stays at the conservative base when
+     * the direction flips (noise). base 160, +160 per consecutive
+     * same-direction press, capped at 480 (~3 presses to full authority). */
+    int r_sign = (r_est > cur_r) - (r_est < cur_r);
+    int b_sign = (b_est > cur_b) - (b_est < cur_b);
+    if (r_sign != 0 && r_sign == ai_wb_r_sign) ai_wb_r_streak++;
+    else { ai_wb_r_sign = r_sign; ai_wb_r_streak = 1; }
+    if (b_sign != 0 && b_sign == ai_wb_b_sign) ai_wb_b_streak++;
+    else { ai_wb_b_sign = b_sign; ai_wb_b_streak = 1; }
+    int r_step = COERCE(160 * ai_wb_r_streak, 160, 480);
+    int b_step = COERCE(160 * ai_wb_b_streak, 160, 480);
+
     int new_r = cur_r + (r_est - cur_r) / 2;
     int new_b = cur_b + (b_est - cur_b) / 2;
-    new_r = COERCE(new_r, cur_r - 160, cur_r + 160);
-    new_b = COERCE(new_b, cur_b - 160, cur_b + 160);
+    new_r = COERCE(new_r, cur_r - r_step, cur_r + r_step);
+    new_b = COERCE(new_b, cur_b - b_step, cur_b + b_step);
     new_r = COERCE(new_r, 256, 1536);
     new_b = COERCE(new_b, 256, 1536);
 
@@ -460,6 +512,37 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     wbs = COERCE(wbs, 0, 9);
     if (wbs != lens_info.wbs_ba)
         lens_set_wbs_ba(wbs);
+
+    /* Green-Magenta cast correction (Canon WBS_GM axis) -- REVERTED.
+     *
+     * Tried: driving lens_set_wbs_gm() from the product r_hi*b_hi, on the
+     * theory that log(r_hi/g)+log(b_hi/g) (~ log(r_hi*b_hi)) is roughly
+     * invariant along the temperature axis, so testing it against a single
+     * daylight-anchored reference product would isolate a genuine green/
+     * magenta cast from ordinary color-temperature variation.
+     *
+     * FIELD-DISPROVEN 2026-07-21: real test shot IMG_5495.CR2, scene at
+     * ColorTemperature 4100K (warm), came back with WB Shift GM = +4
+     * (Canon: positive = toward Green) and the JPEG is severely,
+     * overwhelmingly green -- this code pushed the WRONG direction on an
+     * already-green scene. Root cause: the single-anchor "product stays
+     * constant" assumption only holds near daylight; at 4100K the true
+     * r_hi*b_hi product is legitimately far from the daylight reference for
+     * ordinary color-temperature reasons having nothing to do with a real
+     * G/M cast, so the heuristic misread normal warm-light behavior as
+     * "magenta cast" and pushed a compensating (harmful) green shift.
+     *
+     * Do NOT re-enable this shape of fix without either (a) multiple
+     * calibration anchors spanning tungsten..daylight..shade (not just one),
+     * or (b) a fundamentally different signal that doesn't conflate
+     * temperature with tint. See [[ml6d-ai-wb-picture-tune]] memory for the
+     * history of every other WB fix in this file being field-log-driven --
+     * this one skipped that step and broke on the first real photo.
+     *
+     * NOTE: this may have left lens_info.wbs_gm sitting at a nonzero value
+     * on-camera (Canon's own property, independent of this firmware) --
+     * check/reset WB Shift in Canon's menu if photos still look off after
+     * this revert. */
 
     return 1;
 }
@@ -491,8 +574,8 @@ static int ai_lens_tune_load(void)
     buf[rc] = 0;
 
     int cur = (int) lens_info.lens_id;
-    /* row = {contrast, saturation, tone, ev8, wbr, wbb} */
-    int row[6], def[6], found = 0, have_def = 0;
+    /* row = {contrast, saturation, tone, ev8, wbr, wbb, ca_strength, fringe_reduce} */
+    int row[8], def[8], found = 0, have_def = 0;
 
     char * p = buf;
     while (*p && !found)
@@ -503,17 +586,19 @@ static int ai_lens_tune_load(void)
         *nl = 0;
         if (*p != '#' && strchr(p, '|'))
         {
-            char * f[7];
-            int nf = ai_split(p, f, 7);
+            char * f[9];
+            int nf = ai_split(p, f, 9);
             if (nf >= 4)
             {
-                int v[6];
+                int v[8];
                 v[0] = COERCE(atoi(f[1]), -4, 4);
                 v[1] = COERCE(atoi(f[2]), -4, 4);
                 v[2] = COERCE(atoi(f[3]), -4, 4);
                 v[3] = nf >= 5 ? COERCE(atoi(f[4]), -24, 8)    : 0;
                 v[4] = nf >= 6 ? COERCE(atoi(f[5]), 512, 2048) : 1024;
                 v[5] = nf >= 7 ? COERCE(atoi(f[6]), 512, 2048) : 1024;
+                v[6] = nf >= 8 ? COERCE(atoi(f[7]), 0, 100)    : 0;
+                v[7] = nf >= 9 ? COERCE(atoi(f[8]), 0, 100)    : 0;
                 int id = atoi(f[0]);
                 if (id == cur)
                 {
@@ -539,7 +624,51 @@ static int ai_lens_tune_load(void)
 
     ai_lens_c = row[0]; ai_lens_s = row[1]; ai_lens_t = row[2];
     ai_lens_ev8 = row[3]; ai_lens_wbr = row[4]; ai_lens_wbb = row[5];
+    ai_lens_ca = row[6]; ai_lens_fr = row[7];
     return 1;
+}
+
+/* Look up ca_strength/fringe_reduce for an arbitrary lens_id (falls back to
+ * the lens_id 0 default row, then to 0/0), without touching the cached
+ * ai_lens_tune_load() state for the currently mounted lens. Used by
+ * ai_sidecar_write() (Component 5) so the per-shot sidecar always reflects
+ * the lens actually mounted for that shot. */
+static lens_ca_entry_t ai_lens_tune_ca_lookup(int lens_id)
+{
+    lens_ca_entry_t out = { 0, 0 };
+    static char buf[2048];
+    int rc = read_file(AI_LENS_TUNE_PATH, buf, (int) sizeof(buf) - 1);
+    if (rc <= 0) return out;
+    if (rc > (int) sizeof(buf) - 1) rc = sizeof(buf) - 1;
+    buf[rc] = 0;
+
+    int found = 0, have_def = 0, def_ca = 0, def_fr = 0;
+    char * p = buf;
+    while (*p && !found)
+    {
+        char * nl = p;
+        while (*nl && *nl != '\n' && *nl != '\r') nl++;
+        char saved = *nl;
+        *nl = 0;
+        if (*p != '#' && strchr(p, '|'))
+        {
+            char * f[9];
+            int nf = ai_split(p, f, 9);
+            if (nf >= 4)
+            {
+                int ca = nf >= 8 ? COERCE(atoi(f[7]), 0, 100) : 0;
+                int fr = nf >= 9 ? COERCE(atoi(f[8]), 0, 100) : 0;
+                int id = atoi(f[0]);
+                if (id == lens_id) { out.ca_strength = ca; out.fringe_reduce = fr; found = 1; }
+                else if (id == 0) { def_ca = ca; def_fr = fr; have_def = 1; }
+            }
+        }
+        *nl = saved;
+        p = nl;
+        while (*p == '\n' || *p == '\r') p++;
+    }
+    if (!found && have_def) { out.ca_strength = def_ca; out.fringe_reduce = def_fr; }
+    return out;
 }
 
 /* Write the current tune values back to lens_tune.tbl as the row for the
@@ -551,10 +680,11 @@ static int ai_lens_tune_save(void)
     static char out[2048];
     int cur = (int) lens_info.lens_id;
 
-    char row[80];
-    snprintf(row, sizeof(row), "%d|%d|%d|%d|%d|%d|%d  #user\n",
+    char row[96];
+    snprintf(row, sizeof(row), "%d|%d|%d|%d|%d|%d|%d|%d|%d  #user\n",
              cur, ai_lens_c, ai_lens_s, ai_lens_t,
-             ai_lens_ev8, ai_lens_wbr, ai_lens_wbb);
+             ai_lens_ev8, ai_lens_wbr, ai_lens_wbb,
+             ai_lens_ca, ai_lens_fr);
     int rl = strlen(row);
 
     int rc = read_file(AI_LENS_TUNE_PATH, buf, (int) sizeof(buf) - 1);
@@ -602,6 +732,222 @@ static void ai_picture_tune(void)
     picstyle_set_current_contrast(ai_lens_c);
     picstyle_set_current_saturation(ai_lens_s);
     picstyle_set_current_color_tone(ai_lens_t);
+}
+
+/* --------------------------------------------------------------------------
+ * ML Extended Intelligence dual-ISO MakerNote tag (spec
+ * cr2-intelligence-integration, Component 6). Lets StudioRoom detect
+ * dual-ISO from the CR2 alone when no `.ml` sidecar is present.
+ * -------------------------------------------------------------------------- */
+
+#define TAG_ML_DUALISO_0x0027 0x0027
+
+/* ISO -> APEX index: index = 72 + 8*log2(iso/100), clamped [56..136]. */
+static uint16_t apex_encode(int iso)
+{
+    if (iso <= 0) return 56;
+    int idx = 72 + (int) roundf(8.0f * (logf((float) iso / 100.0f) / logf(2.0f)));
+    return (uint16_t) COERCE(idx, 56, 136);
+}
+
+/* Inverse of apex_encode -- APEX index -> ISO. Also how the firmware itself
+ * already derives ISO from lens_info.iso_analog_raw (same encoding, see
+ * dual_iso.c: canon_iso_index = (iso_analog_raw - 72) / 8), so this doubles
+ * as the shared decode used by ai_sidecar_write() to report real ISO values
+ * from the firmware's native APEX-index state. */
+static int apex_decode(uint16_t apex_index)
+{
+    if (apex_index == 0) return 0;
+    return (int) roundf(100.0f * powf(2.0f, ((float)(int) apex_index - 72.0f) / 8.0f));
+}
+
+/* Rewrite exactly 2 bytes of an already-closed CR2's MakerNote IFD entry for
+ * tag TAG_ML_DUALISO_0x0027, in place -- no file resize, no other IFD entry
+ * touched (Requirement 6.5). `ifd_value_offset` is the file byte offset of
+ * that entry's 2-byte SHORT value, recorded by the caller at capture time
+ * (Canon's native firmware writes the CR2; ML does not own that IFD layout
+ * generically, so the offset must come from wherever the post-capture hook
+ * already knows the MakerNote IFD was written -- camera-specific, TODO for
+ * the on-device bring-up in task 10). Returns 1 on success. */
+static int exif_ifd_patch_u16(const char * cr2_filename, uint32_t ifd_value_offset, uint16_t value)
+{
+    FILE * f = FIO_OpenFile(cr2_filename, O_RDWR | O_SYNC);
+    if (!f) return 0;
+    FIO_SeekSkipFile(f, ifd_value_offset, SEEK_SET);
+    uint8_t le[2] = { (uint8_t)(value & 0xFF), (uint8_t)((value >> 8) & 0xFF) };
+    FIO_WriteFile(f, le, sizeof(le));
+    FIO_CloseFile(f);
+    return 1;
+}
+
+/* Compute the dual-ISO tag value from current dual-ISO state and patch it
+ * into the just-written CR2's MakerNote. `mknote_dualiso_offset` is the
+ * MakerNote IFD value offset recorded for this shot by the post-capture
+ * hook (see task 10.2's on-device hex-dump verification -- the exact offset
+ * depends on where Canon's firmware laid out the MakerNote for this body/
+ * firmware version, which cannot be hardcoded without a captured sample). */
+static void ai_makernote_dualiso_patch(const char * cr2_filename, uint32_t mknote_dualiso_offset)
+{
+    uint16_t tag_value = 0;
+    if (dual_iso_is_enabled() && dual_iso_is_active())
+    {
+        uint16_t base = apex_encode(apex_decode((uint16_t) lens_info.iso_analog_raw));
+        uint16_t alt = apex_encode(apex_decode((uint16_t) dual_iso_get_alternate_iso()));
+        tag_value = (uint16_t)((base & 0xFF) | ((alt & 0xFF) << 8));
+    }
+    exif_ifd_patch_u16(cr2_filename, mknote_dualiso_offset, tag_value);
+}
+
+/* --------------------------------------------------------------------------
+ * ML Extended Intelligence data export (spec cr2-intelligence-integration,
+ * Components 4/5). Writes the StudioRoom-side data contract so the app's
+ * (already-implemented) sidecar consumer has real firmware-produced files
+ * to read: a per-session `ml_export.json` and a per-shot `{filename}.ml`.
+ * Hand-rolled my_fprintf JSON construction -- no external library, matching
+ * this module's existing integer-only / no-heap-allocation constraints.
+ * -------------------------------------------------------------------------- */
+
+#define AI_EXPORT_DIR       "ML/DATA"
+#define AI_EXPORT_SESSION   "ML/DATA/ml_export.json"
+#define AI_SIDECAR_DIR      "ML/DATA/SHOTS"
+
+/* 6D full-frame sensor (20.2MP, 5472x3648): pixel pitch derived from a
+ * 35.8x23.9mm sensor / 5472px width. No native full-frame-vs-crop
+ * ambiguity on this body -- crop factor is always 1.0. */
+#define AI_SENSOR_PIXEL_PITCH_UM  6.54f
+#define AI_SENSOR_CROP_FACTOR     1.0f
+
+/* Returns Canon Picture Style name string for the currently active style,
+ * for use in the JSON export (matches the "pictureStyle" field StudioRoom's
+ * MlSidecarParser / CanonPictureStyle enum expects: STANDARD, PORTRAIT,
+ * LANDSCAPE, NEUTRAL, FAITHFUL, MONOCHROME, AUTO, USER_DEF). */
+static const char * ai_picture_style_name(void)
+{
+    const char * name = picstyle_get_current_name();
+    return name ? name : "STANDARD";
+}
+
+/* Session-level export: written at module init and re-checked from the
+ * ETTR polling loop (auto_ettr_polling_cbr) whenever dual-ISO/ETTR/Picture
+ * Style state changes, satisfying the "rewrite within 2 seconds of a menu
+ * change" requirement without a dedicated per-toggle callback (none exists
+ * for these CONFIG_INT-backed menu items today). One retry after a 1s
+ * delay on write failure; a second failure shows a non-blocking indicator
+ * and gives up for this call -- shooting is never delayed or blocked. */
+static int ai_export_session_write(void)
+{
+    FIO_CreateDirectory(AI_EXPORT_DIR);
+
+    static char json[512];
+    int len = snprintf(json, sizeof(json),
+        "{\"formatVersion\":2,\"schema_version\":\"2.0\",\"firmwareVersion\":\"%s\",\"body\":\"%s\","
+        "\"sensor\":{\"pixelPitch\":%d.%02d,\"cropFactor\":%d.%d},"
+        "\"session\":{\"dualIsoEnabled\":%s,\"ettrEnabled\":%s,\"pictureStyle\":\"%s\"}}",
+        build_version, camera_model,
+        (int) AI_SENSOR_PIXEL_PITCH_UM, ((int)(AI_SENSOR_PIXEL_PITCH_UM * 100)) % 100,
+        (int) AI_SENSOR_CROP_FACTOR, ((int)(AI_SENSOR_CROP_FACTOR * 10)) % 10,
+        dual_iso_is_enabled() ? "true" : "false",
+        auto_ettr ? "true" : "false",
+        ai_picture_style_name());
+    if (len <= 0 || len >= (int) sizeof(json)) return 0;
+
+    for (int attempt = 0; attempt < 2; attempt++)
+    {
+        FILE * f = FIO_CreateFile(AI_EXPORT_SESSION);
+        if (f)
+        {
+            FIO_WriteFile(f, json, len);
+            FIO_CloseFile(f);
+            return 1;
+        }
+        if (attempt == 0) msleep(1000);
+    }
+    NotifyBox(2000, "AI: session export failed");
+    return 0;
+}
+
+/* Per-shot sidecar: written from the post-capture callback (the same point
+ * that finalizes other per-shot AI logging), immediately after the CR2 is
+ * closed. Failure is silent (Requirement 5.5) -- never interrupts capture
+ * or corrupts previously written sidecars (this only ever creates a new,
+ * distinctly-named file).
+ *
+ * @param cr2_filename  Basename without extension, e.g. "IMG_5290".
+ *                      Used to construct path ML/DATA/SHOTS/{basename}.ml6d.
+ *                      The full CR2 name ("{basename}.CR2") is reconstructed
+ *                      internally for the JSON "filename" field. */
+static void ai_sidecar_write(const char * cr2_filename)
+{
+    FIO_CreateDirectory(AI_SIDECAR_DIR);
+
+    char path[80];
+    int pl = snprintf(path, sizeof(path), "%s/%s.ml6d", AI_SIDECAR_DIR, cr2_filename);
+    if (pl <= 0 || pl >= (int) sizeof(path)) return;
+
+    /* Reconstruct the full CR2 filename for the JSON "filename" field.
+     * The caller passes basename only (e.g. "IMG_5290") so that the file
+     * path is correct (no double extension), but the JSON contract still
+     * requires the full name with .CR2 extension. */
+    char full_cr2_name[24];
+    snprintf(full_cr2_name, sizeof(full_cr2_name), "%s.CR2", cr2_filename);
+
+    lens_ca_entry_t ca = ai_lens_tune_ca_lookup((int) lens_info.lens_id);
+
+    static char json[640];
+    int len = snprintf(json, sizeof(json),
+        "{\"formatVersion\":2,\"schema_version\":\"2.0\",\"filename\":\"%s\","
+        "\"lens\":{\"id\":%d,\"caStrength\":%d,\"fringeReduce\":%d},"
+        "\"pictureStyle\":\"%s\"",
+        full_cr2_name, (int) lens_info.lens_id, ca.ca_strength, ca.fringe_reduce,
+        ai_picture_style_name());
+    if (len <= 0 || len >= (int) sizeof(json)) return;
+
+    if (dual_iso_is_enabled() && dual_iso_is_active())
+    {
+        int base_iso = apex_decode((uint16_t) lens_info.iso_analog_raw);
+        int alt_iso = apex_decode((uint16_t) dual_iso_get_alternate_iso());
+        int add = snprintf(json + len, sizeof(json) - len,
+            ",\"dualIso\":{\"enabled\":true,\"isoBase\":%d,\"isoAlternate\":%d,\"interleavePeriod\":2}",
+            base_iso, alt_iso);
+        if (add <= 0 || add >= (int)(sizeof(json) - len)) return;
+        len += add;
+    }
+
+    if (auto_ettr)
+    {
+        ettr_metadata_t m = ettr_last_metadata();
+        int add = snprintf(json + len, sizeof(json) - len,
+            ",\"ettr\":{\"lightLevel\":%d,\"sceneDR\":%d.%d,\"highlightHeadroom\":%d.%d,"
+            "\"channelClip\":[%d.%03d,%d.%03d,%d.%03d]}",
+            m.light_level,
+            (int) m.scene_dr, ((int)(m.scene_dr * 10)) % 10,
+            (int) m.highlight_headroom, ((int)(m.highlight_headroom * 10)) % 10,
+            (int) m.clip_r, ((int)(m.clip_r * 1000)) % 1000,
+            (int) m.clip_g, ((int)(m.clip_g * 1000)) % 1000,
+            (int) m.clip_b, ((int)(m.clip_b * 1000)) % 1000);
+        if (add <= 0 || add >= (int)(sizeof(json) - len)) return;
+        len += add;
+    }
+
+    /* Dual-ISO MakerNote patch status — always emitted */
+    if (AI_MKNOTE_DUALISO_OFFSET_TODO == 0)
+    {
+        int add = snprintf(json + len, sizeof(json) - len, ",\"dualIsoPatch\":\"unsupported\"");
+        if (add > 0) len += add;
+    }
+    else
+    {
+        int add = snprintf(json + len, sizeof(json) - len, ",\"dualIsoPatch\":\"applied\"");
+        if (add > 0) len += add;
+    }
+
+    if (len + 1 >= (int) sizeof(json)) return;
+    json[len++] = '}';
+
+    FILE * f = FIO_CreateFile(path);
+    if (!f) return;   /* skip silently, Requirement 5.5 */
+    FIO_WriteFile(f, json, len);
+    FIO_CloseFile(f);
 }
 
 /* --------------------------------------------------------------------------
@@ -691,10 +1037,10 @@ static int ai_lut_log(void)
     snprintf(line, sizeof(line),
         "\nHistSrc=disp\nScene=%s\nLightLevel=%d\nLightSrc=%s"
         "\nRawMed=%d\nRawP99=%d\nRawR=%d\nRawB=%d\nWbConf=%d"
-        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nWbs=%d\nLens=%d\nFileNum=%d\n---\n",
+        "\nShutter=%dms\nISO=%d\nWB=R%d,G%d,B%d\nWbs=%d\nWbsGm=%d\nLens=%d\nFileNum=%d\n---\n",
         scene, light, (ai_light_src ? "raw" : "disp"),
         ai_raw_med, ai_raw_p99, r_med, b_med, ai_wb_conf,
-        shutter_ms, iso, wr, wg, wbb, (int) lens_info.wbs_ba,
+        shutter_ms, iso, wr, wg, wbb, (int) lens_info.wbs_ba, (int) lens_info.wbs_gm,
         (int) lens_info.lens_id, fnum);
     FIO_WriteFile(f, line, strlen(line));
 

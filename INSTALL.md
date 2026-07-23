@@ -13,9 +13,10 @@
 The on-camera scripts expect the following layout on the SD card (drive `A:`):
 
 ```
-A:/ML/scripts/   -- unified_logger.lua, decision_engine.lua
+A:/ML/scripts/   -- unified_logger.lua, decision_engine.lua, mov_metadata.lua
 A:/ML/models/    -- unified.tbl
 A:/ML/logs/      -- unified_log.txt (created at runtime)
+A:/ML/DATA/SHOTS/ -- per-clip metadata CSVs + Gyroflow logs (created at runtime)
 ```
 
 ## Steps

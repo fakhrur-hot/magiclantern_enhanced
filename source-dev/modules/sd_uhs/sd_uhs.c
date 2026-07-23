@@ -35,6 +35,138 @@ static int turned_on = 0;
 static CONFIG_INT("sd.sd_overclock", sd_overclock, 0);
 static CONFIG_INT("sd.sd_access_mode", access_mode, 1);
 
+/* --------------------------------------------------------------------------
+ * Auto Speed Test: cycles overclock presets from fastest to slowest across
+ * reboots, using the same Canon safe-mode fallback register sd_uhs_update()
+ * already checks (0xC0400614) to auto-fail any preset the card/camera itself
+ * rejects. This can only ever automate "did Canon's safe-mode kick in" -- it
+ * CANNOT automate "is this stable for a real sustained recording": extensive
+ * community testing (e.g. Samsung PRO Plus) found cards that pass a safe-mode
+ * check yet still fail during real recording. So the wizard always stops
+ * after a safe-mode pass and requires the user to explicitly confirm real
+ * recording tests were done before treating a preset as final. It never
+ * reboots the camera itself -- the user restarts manually, same as the
+ * existing "SD Frequency" menu already requires. */
+#define AUTOTEST_IDLE           0
+#define AUTOTEST_TESTING        1  /* preset applied, awaiting reboot + safe-mode check */
+#define AUTOTEST_AWAIT_CONFIRM  2  /* preset passed safe-mode, awaiting user's real-recording verdict */
+#define AUTOTEST_DONE           3
+#define AUTOTEST_FAILED_ALL     4
+
+/* Which preset autotest_state currently refers to (1=240MHz, 2=192MHz,
+ * 3=160MHz -- same encoding as sd_overclock itself). Kept separate from
+ * autotest_state so AWAIT_CONFIRM doesn't lose track of which preset it's
+ * judging. */
+static CONFIG_INT("sd.autotest_state", autotest_state, AUTOTEST_IDLE);
+static CONFIG_INT("sd.autotest_preset", autotest_preset, 0);
+
+#define AUTOTEST_LOG_PATH "ML/logs/sd_autotest.txt"
+
+static void autotest_log(const char * msg)
+{
+    FIO_CreateDirectory("ML/logs");
+    FILE * f = FIO_OpenFile(AUTOTEST_LOG_PATH, O_RDWR | O_CREAT | O_SYNC);
+    if (!f) return;
+    FIO_SeekSkipFile(f, 0, SEEK_END);
+    FIO_WriteFile(f, msg, strlen(msg));
+    FIO_WriteFile(f, "\n", 1);
+    FIO_CloseFile(f);
+}
+
+static const char * autotest_preset_name(int preset)
+{
+    switch (preset)
+    {
+        case 3: return "240MHz";
+        case 2: return "192MHz";
+        case 1: return "160MHz";
+        default: return "OFF";
+    }
+}
+
+static MENU_SELECT_FUNC(autotest_start)
+{
+    autotest_preset = 3; /* start at the fastest preset, step down on failure */
+    autotest_state = AUTOTEST_TESTING;
+    sd_overclock = autotest_preset;
+    autotest_log("AUTOTEST: starting wizard, testing 240MHz");
+    NotifyBox(6000, "Auto Speed Test: set to 240MHz.\nRESTART camera to continue.");
+}
+
+/* Steps down to the next slower preset, or ends the wizard (overclock OFF)
+ * if 160MHz itself is not safe/stable. Shared by the automatic safe-mode
+ * failure path (sd_uhs_update) and the manual "Mark Unstable" path. */
+static void autotest_advance(const char * reason)
+{
+    char msg[80];
+
+    if (autotest_preset <= 1)
+    {
+        /* 160MHz itself failed (or was marked unstable) -- nothing left to try */
+        autotest_state = AUTOTEST_FAILED_ALL;
+        autotest_preset = 0;
+        sd_overclock = 0;
+        snprintf(msg, sizeof(msg), "AUTOTEST: %s, 160MHz was the last option, overclock disabled", reason);
+        autotest_log(msg);
+        NotifyBox(6000, "Auto Speed Test: no stable preset found.\nOverclock disabled. RESTART to apply.");
+        return;
+    }
+
+    autotest_preset--;
+    autotest_state = AUTOTEST_TESTING;
+    sd_overclock = autotest_preset;
+    snprintf(msg, sizeof(msg), "AUTOTEST: %s, now testing %s", reason, autotest_preset_name(autotest_preset));
+    autotest_log(msg);
+    NotifyBox(6000, "Auto Speed Test: stepping down.\nRESTART camera to continue.");
+}
+
+static MENU_SELECT_FUNC(autotest_confirm_pass)
+{
+    if (autotest_state != AUTOTEST_AWAIT_CONFIRM) return;
+    char msg[80];
+    autotest_state = AUTOTEST_DONE;
+    snprintf(msg, sizeof(msg), "AUTOTEST: user confirmed %s stable after real recording tests, keeping it", autotest_preset_name(autotest_preset));
+    autotest_log(msg);
+    NotifyBox(4000, "Auto Speed Test: preset kept as final.");
+}
+
+static MENU_SELECT_FUNC(autotest_confirm_fail)
+{
+    if (autotest_state != AUTOTEST_AWAIT_CONFIRM) return;
+    autotest_advance("user marked unstable after real recording test");
+}
+
+static MENU_SELECT_FUNC(autotest_reset)
+{
+    autotest_state = AUTOTEST_IDLE;
+    autotest_preset = 0;
+    autotest_log("AUTOTEST: wizard reset by user");
+}
+
+static MENU_UPDATE_FUNC(autotest_status_display)
+{
+    switch (autotest_state)
+    {
+        case AUTOTEST_IDLE:
+            MENU_SET_VALUE("Idle");
+            break;
+        case AUTOTEST_TESTING:
+            MENU_SET_VALUE("Testing %s...", autotest_preset_name(autotest_preset));
+            MENU_SET_WARNING(MENU_WARN_INFO, "Restart camera, then reopen this menu to check safe-mode result.");
+            break;
+        case AUTOTEST_AWAIT_CONFIRM:
+            MENU_SET_VALUE("%s passed safe-mode", autotest_preset_name(autotest_preset));
+            MENU_SET_WARNING(MENU_WARN_INFO, "Record several REAL test clips now, then Confirm Stable or Mark Unstable below.");
+            break;
+        case AUTOTEST_DONE:
+            MENU_SET_VALUE("Done: %s", autotest_preset_name(autotest_preset));
+            break;
+        case AUTOTEST_FAILED_ALL:
+            MENU_SET_VALUE("No safe preset found");
+            break;
+    }
+}
+
 /* CID info hook, should work on all DIGIC 5 models */
 uint32_t MID;
 uint32_t OID;
@@ -449,6 +581,15 @@ static void sd_overclock_task()
     }
 }
 
+/* Guards the Auto Speed Test's safe-mode check to run once per boot. This is
+ * a plain static (not persisted), so it naturally resets to 0 on every
+ * reboot -- exactly the semantics needed, since the overclock register only
+ * actually changes after a reboot. Without this guard, sd_uhs_update() (called
+ * many times per second while this submenu is open) would cascade through
+ * every remaining preset in a fraction of a second, since the register it
+ * reads doesn't change again until the user actually restarts the camera. */
+static int autotest_checked_this_boot = 0;
+
 static MENU_UPDATE_FUNC(sd_uhs_update)
 {
     /* Simple method to check if Canon safe mode get triggered (switched to 48 MHz / 21 MB/s) */
@@ -457,14 +598,32 @@ static MENU_UPDATE_FUNC(sd_uhs_update)
     /* 0xC0400614 is one of the SD overclocking registers, by default Canon set it to 0x1d000601
        when using Canon 48 MHz preset */
 
-    /* 5D3 doesn't have 48 MHz safe mode, instead of that, it locks the access to SD card directly */
+    /* 5D3 doesn't have 48 MHz safe mode, instead of that, it locks the access to SD card directly.
+     * The Auto Speed Test wizard's automatic detection relies on this register, so it only works
+     * on non-5D3 models (including 6D, this project's target) -- same scope as the check below. */
     if (!is_camera("5D3", "*"))
     {
         if (turned_on)
         {
-            if (*(uint32_t *)0xC0400614 == 0x1d000601)
+            int safe_mode_triggered = (*(uint32_t *)0xC0400614 == 0x1d000601);
+
+            if (safe_mode_triggered)
             {
                 MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Safe mode was triggered, try lower frequency or different access mode.");
+            }
+
+            if (!autotest_checked_this_boot && autotest_state == AUTOTEST_TESTING)
+            {
+                autotest_checked_this_boot = 1;
+                if (safe_mode_triggered)
+                {
+                    autotest_advance("safe-mode triggered automatically");
+                }
+                else
+                {
+                    autotest_state = AUTOTEST_AWAIT_CONFIRM;
+                    autotest_log("AUTOTEST: passed automatic safe-mode check, awaiting user confirmation");
+                }
             }
         }
     }
@@ -641,6 +800,45 @@ static struct menu_entry sd_uhs_menu[] =
                         .update = CRC_display,
                         .help = "CRC7 checksum.",
                         .icon_type = IT_ALWAYS_ON,
+                    },
+                    MENU_EOL,
+                },
+            },
+            {
+                .name = "Auto Speed Test",
+                .select = menu_open_submenu,
+                .help = "Cycle presets 240->192->160MHz, auto-skip any that hit Canon safe-mode.",
+                .help2 = "Does NOT replace real recording tests -- confirms only after you test.",
+                .icon_type = IT_ACTION,
+                .children = (struct menu_entry[]){
+                    {
+                        .name = "Status:",
+                        .update = autotest_status_display,
+                        .icon_type = IT_ALWAYS_ON,
+                    },
+                    {
+                        .name = "Start / Restart Test",
+                        .select = autotest_start,
+                        .help = "Begins at 240MHz. Restart the camera after selecting this.",
+                        .icon_type = IT_ACTION,
+                    },
+                    {
+                        .name = "Confirm Stable",
+                        .select = autotest_confirm_pass,
+                        .help = "Only after recording several REAL test clips successfully.",
+                        .icon_type = IT_ACTION,
+                    },
+                    {
+                        .name = "Mark Unstable",
+                        .select = autotest_confirm_fail,
+                        .help = "Real recording failed even though safe-mode check passed; step down.",
+                        .icon_type = IT_ACTION,
+                    },
+                    {
+                        .name = "Cancel / Reset",
+                        .select = autotest_reset,
+                        .help = "Stop the wizard without changing the current SD Frequency setting.",
+                        .icon_type = IT_ACTION,
                     },
                     MENU_EOL,
                 },
@@ -868,4 +1066,6 @@ MODULE_INFO_END()
 MODULE_CONFIGS_START()
 MODULE_CONFIG(sd_overclock)
 MODULE_CONFIG(access_mode)
+MODULE_CONFIG(autotest_state)
+MODULE_CONFIG(autotest_preset)
 MODULE_CONFIGS_END()

@@ -2,7 +2,7 @@
 # Read by the firmware (modules/ettr/ai_lut.h -> ai_lens_tune_load) whenever
 # the mounted lens changes while the AI is active.
 #
-# Format:  lens_id|contrast|saturation|color_tone[|ev_bias|wb_r|wb_b]
+# Format:  lens_id|contrast|saturation|color_tone[|ev_bias|wb_r|wb_b[|ca_strength|fringe_reduce]]
 #   lens_id       Canon lens id (see ML: lens_info.lens_id; also logged as
 #                 Lens= in unified_log.txt). lens_id 0 = DEFAULT for any
 #                 unlisted lens.
@@ -16,13 +16,27 @@
 #   wb_r, wb_b    optional AI White Balance trims, 1024 = 1.0x (only active
 #                 with "AI White Balance" ON). Suppression scale: wb_r < 1024
 #                 warms (more red), wb_b > 1024 warms (less blue).
+#   ca_strength   optional, [0..100] chromatic aberration correction strength,
+#                 sourced by ai_sidecar_write()'s lens block (Component 5).
+#                 Must stay identical to the StudioRoom app/src/main/assets/
+#                 ml/lens_tune.tbl copy for any lens_id present in both files
+#                 (spec cr2-intelligence-integration, Requirement 3.4).
+#   fringe_reduce optional, [0..100] purple/green fringe suppression strength.
 #
-# Old 4-column rows stay valid (no exposure/WB change).
+# Old 4/6-column rows stay valid (no exposure/WB/CA change; CA defaults 0/0).
 #
 # lens_id 0 = default (neutral).
-0|0|0|0
+0|0|0|0|0|1024|1024|0|0
 # Tamron SP AF 20-40mm f/2.7-3.5 Aspherical (IF) -- reports id 160, "21-39mm".
-# Blooms highlights (~+1 EV vs metered target, IMG_5296-5299 2026-07-19) and
-# leans cold. ev -8 = meter 1 EV more protective; WB warmed ~6%.
-160|-1|0|1|-8|960|1152  #user
-228|-1|0|0|0|1024|1024  #user
+# Blooms highlights (~+1 EV vs metered target, IMG_5296-5299 2026-07-19):
+# ev -8 = meter 1 EV more protective (kept). CA values mirrored from the
+# StudioRoom asset copy (shared lens_id, Requirement 3.4) -- kept.
+# WB trims + color_tone NEUTRALIZED 2026-07-21: the earlier warm bias
+# (wb_r 960 / wb_b 1152) + color_tone +1 were compounding a green/warm JPEG
+# cast on top of the OVF one-shot-lag WB issue (see project-context.md).
+# Reset to neutral so the base AI WB behavior can be judged without a per-lens
+# color offset stacked on it. contrast -1 kept (tone preference, not a cast).
+160|-1|0|0|-8|1024|1024|15|20  #user
+# lens_id 228 is not present in the StudioRoom copy (no parity constraint);
+# CA data not yet calibrated for this lens, default 0/0.
+228|-1|0|0|0|1024|1024|0|0  #user
