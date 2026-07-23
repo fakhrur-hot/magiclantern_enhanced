@@ -41,6 +41,42 @@ offline and is not part of the on-camera code.
   Av your aperture is never overwritten; in Tv your shutter is never overwritten;
   in M the AI has full control.
 
+## What's distinct from upstream Magic Lantern
+
+This project is a fork of the **`magiclantern_simplified`** source (vendored in
+`source-dev/`, and archived pristine as `magiclantern_simplified-dev.zip` for
+reference). Everything upstream ML does still works — the files below are the
+only ones that differ from that base. Diff any of them against the archived
+source to see exactly what changed.
+
+**New files (this fork only):**
+
+| File | What it adds |
+|---|---|
+| `source-dev/modules/ettr/ai_lut.h` | The whole AI engine: AI-LUT scene lookup, confidence-clipped **AI White Balance**, per-lens **AI Lens Tune**, extended ETTR metadata, firmware **data logging**, and the RaZStudio `.ml6d` sidecar + `ml_export.json` session writers. |
+| `source-dev/modules/ettr/gyro_bridge.{c,h}` | External-IMU-over-hot-shoe + electronic-level bridge and `mlc.gyro()` / `mlc.level()` Lua bindings for video metadata. **Experimental, currently compiled out** — see note below. |
+| `source-dev/modules/ettr/mlv_metadata.{c,h}` | Per-frame GYRO/ETTR blocks embedded into `.MLV` recordings. Same experimental subsystem, currently compiled out. |
+| `models/unified.tbl`, `models/lens_tune.tbl` | The learned scene LUT and the per-lens tuning table (contrast/sat/tone, EV bias, WB trims, CA/fringe). |
+| `docs/RAZSTUDIO_CONTRACT.md` | The firmware ↔ RaZStudio on-disk data contract (sidecar/session schemas, versioning, graceful-degradation rules). |
+| `source-dev/build_tools/validate_sidecar.py` | Validates `.ml6d` sidecars against that contract. |
+| `lua_scripts/mov_metadata.lua` | Companion Gyroflow/metadata logger script (experimental). |
+
+**Modified upstream files:**
+
+| File | Change vs upstream |
+|---|---|
+| `source-dev/modules/ettr/ettr.c` | Auto ISO Optimizer, all AI menu entries + hooks, and per-capture `.ml6d`/session export driven from the shoot-task poll (`CBR_SHOOT_TASK` — this fork's core never fires `CBR_POST_SHOOT`). |
+| `source-dev/modules/sd_uhs/sd_uhs.c` | Added an **Auto Speed Test** wizard (`Prefs → SD Overclock`) that steps 240→192→160 MHz across reboots, auto-skipping any preset the card rejects (Canon safe-mode register), plus 6D/70D read/write pause hooks. |
+| `source-dev/modules/lua/{lua.c,lua_common.h,Makefile}` | Fixed the long-dormant `LUA_CBR_FUNC(vsync/…)` argument bug, enabled `CONFIG_VSYNC_EVENTS`, and exported the few Lua C API symbols other modules call cross-module. |
+
+> **Video gyro / MLV-metadata is present but disabled.** The
+> `gyro_bridge`/`mlv_metadata` subsystem polls the hot-shoe serial every
+> LiveView frame, which conflicts with a mounted flash and destabilized ETTR
+> in the field. It is compiled out (`ETTR_VIDEO_GYRO_METADATA 0` in `ettr.c`,
+> and its objects are dropped from the module link) so core ETTR stays
+> self-contained and robust. Re-enable only after the hot-shoe/flash conflict
+> is resolved and validated on hardware.
+
 ## How it works
 
 ```
@@ -69,10 +105,12 @@ the very next half-press — no reflash, no reboot.
 
 | Path | Contents |
 |---|---|
-| `source-dev/` | Vendored Magic Lantern source; the AI lives in `modules/ettr/` (`ai_lut.h` + `ettr.c`) |
-| `models/` | `unified.tbl` (learned LUT) and `lens_tune.tbl` (per-lens picture tune) |
-| `tools/` | `validate_exposure.py`, `analyze_log.py`, `make_full_bundle.py` |
-| `docs/` | Validation, troubleshooting, CI/CD, field logging, ETTR-AI integration |
+| `source-dev/` | Vendored `magiclantern_simplified` source. Fork changes live in `modules/ettr/` (`ai_lut.h` + `ettr.c` + gyro/mlv), `modules/sd_uhs/` (Auto Speed Test) and `modules/lua/` (see the table above) |
+| `magiclantern_simplified-dev.zip` | Pristine original-developer source archive, kept for reference/diffing |
+| `models/` | `unified.tbl` (learned LUT) and `lens_tune.tbl` (per-lens tune) |
+| `tools/` | `validate_exposure.py`, `analyze_log.py`, `make_bundle.py`, `make_full_bundle.py` |
+| `docs/` | Validation, troubleshooting, CI/CD, field logging, ETTR-AI integration, RaZStudio contract |
+| `.kiro/` | Kiro specs (RaZStudio_integration, video-gyro-metadata) + steering context |
 | `.github/workflows/` | CI build + release |
 | `dist/` | Built installers (git-ignored) |
 
@@ -81,6 +119,7 @@ the very next half-press — no reflash, no reboot.
 - [INSTALL.md](INSTALL.md) — SD card setup
 - [ARCHITECTURE.md](ARCHITECTURE.md) — data flow and invariants
 - [docs/ETTR_AI_INTEGRATION.md](docs/ETTR_AI_INTEGRATION.md) — how the AI drives ML's ETTR
+- [docs/RAZSTUDIO_CONTRACT.md](docs/RAZSTUDIO_CONTRACT.md) — firmware ↔ RaZStudio `.ml6d`/`ml_export.json` data contract
 - [docs/FIELD_LOGGING_CHECKLIST.md](docs/FIELD_LOGGING_CHECKLIST.md) — collecting training data
 - [docs/VALIDATION.md](docs/VALIDATION.md) · [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) · [docs/CI_CD.md](docs/CI_CD.md)
 
