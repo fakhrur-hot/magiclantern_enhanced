@@ -1,8 +1,14 @@
 name: Build AI Magic Lantern
 
-# REQ-005: build Magic Lantern firmware for the camera matrix and publish the
-# binaries + unified.tbl as artifacts. release.yml triggers on this workflow's
+# Builds the AI-LUT firmware for every DIGIC 5 / DIGIC 5+ camera this fork
+# targets (see README.md "Supported cameras") and publishes the binaries +
+# unified.tbl as artifacts. release.yml triggers on this workflow's
 # successful completion (matched by the name above).
+#
+# DIGIC generation of each matrix entry (classification per
+# wiki.magiclantern.fm/digic): 5D3/6D/70D = DIGIC 5+; 650D/700D/100D/EOSM =
+# DIGIC 5. DIGIC 4 bodies (e.g. 60D) are intentionally NOT built here --
+# this fork's AI features are only validated/targeted for DIGIC 5/5+.
 
 on:
   push:
@@ -25,7 +31,8 @@ jobs:
     strategy:
       fail-fast: false   # one camera failing must not cancel the others
       matrix:
-        camera: [6D.116, 5D3.113, 60D.111, 650D.104]
+        # DIGIC 5+: 5D3 (two FW versions), 6D, 70D. DIGIC 5: 650D, 700D, 100D, EOS M.
+        camera: [6D.116, 5D3.113, 5D3.123, 70D.112, 650D.104, 700D.115, 100D.101, EOSM.202]
     steps:
       - uses: actions/checkout@v4
 

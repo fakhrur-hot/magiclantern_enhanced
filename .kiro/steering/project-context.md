@@ -27,14 +27,15 @@ This is a **Magic Lantern fork for the Canon EOS 6D** (firmware 1.1.6) with AI-e
 ```
 D:\autoexec.bin          — ML firmware binary
 D:\ML-SETUP.FIR          — Setup firmware image
-D:\ML\modules\ettr.mo    — ETTR module (includes AI-LUT + sidecar writer)
+D:\ML\modules\ettr.mo    — ETTR module (AI-LUT: WB, lens tune, ETTR, logging)
 D:\ML\modules\6D_116.sym — Symbol file (must match autoexec.bin)
 D:\ML\modules\dual_iso.mo, lua.mo, etc.
 D:\ML\models\unified.tbl — Scene classification LUT
 D:\ML\models\lens_tune.tbl — Per-lens correction table
 D:\ML\logs\unified_log.txt — Runtime decision log
-D:\ML\DATA\SHOTS\*.ml6d  — Per-shot sidecar files (created at capture time)
-D:\ML\DATA\ml_export.json — Session metadata file
+# D:\ML\DATA\ — RETIRED 2026-07-26: the .ml6d sidecars + ml_export.json writers
+#   were removed (no StudioRoom consumer; also failed to write to ML/DATA).
+#   Firmware no longer writes here; any leftover ML/DATA files are stale.
 ```
 
 ## Build Process
@@ -59,7 +60,20 @@ Copy-Item "source-dev\platform\6D.116\build\autoexec.bin" -Destination "D:\autoe
 - Lua-based unified logger and decision engine
 - On-device validation workflow
 
-### 2. RaZStudio_integration (completed 2026-07-20, sidecar trigger corrected 2026-07-21)
+### 2. RaZStudio_integration (RETIRED 2026-07-26 — see note)
+> **RETIRED.** StudioRoom does NOT consume `.ml6d` sidecars or `ml_export.json` —
+> its source has the sidecar consumer commented out ("MLExtendedIntelligence
+> disabled — sidecar-driven corrections caused issues"). Confirmed-working path
+> is **EXIF-only**: LensID → lens tune, ISO → NR, ColorTemperature → WB (spec
+> `StudioRoom/.kiro/specs/ml6d-cr2-integration`). The firmware writers
+> `ai_sidecar_write` / `ai_export_session_write` / `ai_makernote_dualiso_patch`
+> were **removed** from ettr.c/ai_lut.h on 2026-07-26 (no consumer; and they
+> were failing to write to ML/DATA anyway). On-camera WB/exposure/lens land in
+> standard CR2 EXIF for free. See `docs/RAZSTUDIO_CONTRACT.md` (retired banner).
+> OPEN CHECK: verify ML's custom WB gains actually move the CR2's LibRaw-read
+> ColorTemperature/cam_mul (field EXIF showed ColorTemperature=4100 constant
+> while gains varied). The historical detail below is kept for reference.
+
 - **Firmware fixes:**
   - Fixed double-extension bug (was `IMG_NNNN.CR2.ml` → now `IMG_NNNN.ml6d`)
   - Fixed `file_number` access (uses `get_shooting_card()->file_number` for module safety)

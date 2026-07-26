@@ -1,5 +1,10 @@
 # Implementation Plan: RaZStudio Integration
 
+> **⚠️ RETIRED 2026-07-26.** StudioRoom does not consume `.ml6d` sidecars or
+> `ml_export.json` (its consumer is disabled in-app). Working integration is
+> EXIF-only (`StudioRoom/.kiro/specs/ml6d-cr2-integration`). The firmware
+> sidecar/session/MakerNote writers were removed. Kept for history only.
+
 ## Overview
 
 This plan implements the firmware-side fixes that enable every EOS 6D capture to produce a complete `.ml6d` sidecar and `ml_export.json` session file, documents the consumer contract for RaZStudio, and defines the on-device validation workflow. Firmware C changes come first (they're in this repo), followed by contract documentation and validation artifacts.

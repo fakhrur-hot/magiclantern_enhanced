@@ -89,6 +89,14 @@ dual-ISO flag directly in the CR2 EXIF.
 
 ## RaZStudio Integration Validation
 
+> **⚠️ RETIRED.** The `.ml6d` sidecar / `ml_export.json` contract described in
+> this section was removed from the firmware — the intended consumer app
+> reads standard CR2 EXIF (LensID/ISO/ColorTemperature) instead of per-shot
+> sidecar files, and the writer had an unresolved on-camera write failure
+> besides. See `docs/RAZSTUDIO_CONTRACT.md`'s retirement banner for details.
+> This section is kept for historical reference only — none of it applies to
+> the current firmware.
+
 End-to-end on-device validation proving the `.ml6d` sidecar and `ml_export.json`
 pipeline works from shutter press through RaZStudio import (REQ-006).
 

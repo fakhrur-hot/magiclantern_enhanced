@@ -25,14 +25,6 @@
 /* interface with dual ISO */
 #include "../dual_iso/dual_iso.h"
 
-/* MakerNote IFD value offset for tag TAG_ML_DUALISO_0x0027. Stays at 0 until
- * a real hex-dump-verified offset is found via exiftool on a captured dual-ISO
- * CR2. Must be defined before ai_lut.h which references it in ai_sidecar_write().
- * Used by ai_post_capture_cbr (CBR_POST_SHOOT handler, near end of file). */
-#ifndef AI_MKNOTE_DUALISO_OFFSET_TODO
-#define AI_MKNOTE_DUALISO_OFFSET_TODO 0
-#endif
-
 #include "ai_lut.h"   /* AI-LUT: learned per-scene ISO/WB/ALO/HTP for the optimizer */
 
 /* Video gyro/MLV-metadata subsystem (external IMU over hot-shoe serial +
@@ -93,9 +85,13 @@ static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 0);
  * JPEG-only (picstyle does not touch RAW). Default OFF. */
 static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 0);
 
-/* AI WB target warmth, in ~Canon-A-shift steps (0 = pure neutral "White
- * priority"; default 2 = gentle "Ambience priority" amber for skin tones). */
-static CONFIG_INT("auto.ettr.ai.wb.warmth", ai_wb_warmth, 2);
+/* AI WB warm/cool bias as a menu INDEX 0..8 that maps to Canon's WB-Shift
+ * Amber/Blue axis, signed step = index - 4 (so 0=B4 cool .. 4=Neutral ..
+ * 8=A4 warm). 1 step ~= 5 mireds (Canon spec). Default 4 = Neutral (was A2
+ * warm, which biased everything warm and fed the earlier too-warm/green
+ * complaints). Key renamed .warmth -> .tone so old saved "warmth" values
+ * (0=neutral in the old scheme) don't silently mis-map to a cool bias here. */
+static CONFIG_INT("auto.ettr.ai.wb.tone", ai_wb_warmth, 4);
 
 /* Which shooting modes the whole AI system acts in.
  *   0 = P, M        (default)
@@ -992,11 +988,6 @@ static void auto_ettr_step_task(int corr)
  * the just-captured raw buffer can lag the review opening by a frame or two, so
  * the old one-shot raw_update_params() failed ("Raw error") and the shot was
  * skipped -- leaving it underexposed. Retry for ~0.5 s before giving up. */
-/* NOTE: AI_MKNOTE_DUALISO_OFFSET_TODO is defined near the top of this file
- * (before ai_lut.h inclusion). Sidecar write + MakerNote patch are handled
- * by the file_number-change poll in auto_ettr_polling_cbr (CBR_SHOOT_TASK,
- * near end of file) -- NOT a CBR_POST_SHOOT handler, which was tried and
- * confirmed dead on this fork (see that poll's comment for why). */
 
 static void auto_ettr_photo_task(int unused)
 {
@@ -1008,10 +999,6 @@ static void auto_ettr_photo_task(int unused)
     }
     if (ok)
     {
-        /* Sidecar write + MakerNote patch happen from the file_number poll
-         * in auto_ettr_polling_cbr, not here -- covers ALL captures (not
-         * just ETTR ones) with no double-write risk. */
-
         int corr = auto_ettr_get_correction();
         if (corr != INT_MIN)
         {
@@ -1025,9 +1012,6 @@ static void auto_ettr_photo_task(int unused)
 /* photo mode only, no LV */
 static void auto_ettr_step()
 {
-    /* NOTE: sidecar/MakerNote export for ALL captures (regardless of ETTR
-     * state) happens via the file_number poll in auto_ettr_polling_cbr, not
-     * here -- this function only drives the ETTR metering/correction loop. */
     if (!auto_ettr) return;
     if (shooting_mode != SHOOTMODE_M && !is_movie_mode() && !is_bulb_mode()) return;
     if (lens_info.raw_iso == 0) return;
@@ -1763,6 +1747,89 @@ static MENU_SELECT_FUNC(auto_ettr_max_shutter_toggle)
     }
 }
 
+/* ETTR for P/Av/Tv (auto-exposure) modes -- iteration 1, OVF path.
+ *
+ * The M-mode path (auto_ettr_step/auto_ettr_work) writes shutter/ISO directly,
+ * which Canon overrides in P/Av/Tv. So in the creative auto modes we instead
+ * bias Canon's OWN metering with exposure compensation (lens_info.ae, 1/8 EV;
+ * lens_set_ae clamps to the body's valid EC range). The correction is metered
+ * from the raw highlights exactly like M mode (auto_ettr_get_correction,
+ * 1/100 EV), so highlight protection is identical -- only the actuator differs
+ * (EC vs shutter/ISO).
+ *
+ * Feedback loop: each frame is metered as exposed at the current EC, so
+ * target_ec = cur_ec + needed_shift; the next frame re-meters the result and
+ * converges. Half-damped and step-clamped (max +/-1 EV/shot) to avoid
+ * oscillation; one-shot lag in OVF (meter shot N at review -> EC for N+1),
+ * same as AI WB. Logs each decision to ML/logs/ettr_ec.txt.
+ *
+ * SCOPE: iteration 1 is OVF only (metered from the QR/review frame) -- the
+ * confirmed field use case. LiveView auto-mode ETTR is a deliberate follow-up.
+ * UNVALIDATED on hardware: biasing Canon's auto-exposure can interact with its
+ * own metering; verify on-camera before trusting. */
+static void auto_ettr_ec_step(void)
+{
+    if (!auto_ettr) return;
+    /* M / movie / bulb are owned by the direct shutter+ISO path, not EC */
+    if (shooting_mode == SHOOTMODE_M || is_movie_mode() || is_bulb_mode()) return;
+    if (!ai_mode_covered()) return;   /* respects the AI Modes menu (P / +Av/Tv) */
+
+    /* Meter the highlights DIRECTLY with raw_hist_get_percentile_levels at
+     * speed 4 -- the exact call/speed the AI-WB pass uses successfully in this
+     * QR/review context. We do NOT call auto_ettr_get_correction (it forces a
+     * full-res speed=1 scan in non-LV that returns "not ready" here) and do
+     * NOT re-run raw_update_params (the 2nd call in the review window fails);
+     * we read the buffer WB just read. p999 = brightest highlights (MAX of
+     * R/G/B, so any channel near clip counts). */
+    int black = raw_info.black_level;
+    int white = raw_info.white_level;
+    int span  = white - black;
+    int pcts[2] = {999, 950};
+    int lvls[2] = {-1, -1};
+    int meter_ok = (span >= 8) &&
+        (raw_hist_get_percentile_levels(pcts, lvls, 2,
+            GRAY_PROJECTION_MAX_RGB | GRAY_PROJECTION_DARK_ONLY, 4) == 1) &&
+        (lvls[0] >= 0);
+
+    /* TARGET = headroom UNDER clip (not at clip): aim the brightest highlights
+     * 0.5..0.70 EV below saturation, more headroom the closer they are to
+     * clipping. This is a FIXED POINT -> converges and settles, so it can't
+     * run away / over-darken (the property the removed exact-exposure guard
+     * was meant to give; that guard never fired anyway with Auto ISO). */
+    int cur_ec = lens_info.ae;                /* 1/8 EV, signed */
+    int clipp = 0, hl_e2 = 0, headroom = 0, shift_e2 = 0, delta8 = 0, target = cur_ec;
+    if (meter_ok)
+    {
+        int hl = lvls[0] - black; if (hl < 1) hl = 1;
+        clipp = hl * 1000 / span;             /* highlight vs saturation, permille (0..1000) */
+        headroom = (clipp >= 980) ? 70 : (clipp >= 900) ? 60 : 50;  /* 1/100 EV, by severity */
+        hl_e2 = (int)(raw_to_ev(lvls[0]) * 100);  /* highlight EV rel. to clip, x100 (<=0) */
+        shift_e2 = (-headroom) - hl_e2;        /* 1/100 EV to move highlight to -headroom */
+        delta8 = COERCE((shift_e2 * 8 / 100) / 2, -8, 8);  /* ->1/8 EV, half-damped, <=1EV/shot */
+        target = COERCE(cur_ec + delta8, -40, 16);         /* -5..+2 EV; lens_set_ae re-clamps */
+    }
+
+    /* log EVERY call to ML/logs (writable), before any early-out */
+    FIO_CreateDirectory("ML/logs");
+    FILE * _f = FIO_CreateFileOrAppend("ML/logs/ettr_ec.txt");
+    if (_f)
+    {
+        char _l[176];
+        int _n = meter_ok
+            ? snprintf(_l, sizeof(_l),
+                "mode=%d clip=%d hlEV=%d headroom=%d shift=%d curEC=%d d8=%d targetEC=%d\n",
+                shooting_mode, clipp, hl_e2, headroom, shift_e2, cur_ec, delta8, target)
+            : snprintf(_l, sizeof(_l),
+                "mode=%d meter=NA span=%d lvl=%d curEC=%d\n",
+                shooting_mode, span, lvls[0], cur_ec);
+        if (_n > 0) FIO_WriteFile(_f, _l, _n);
+        FIO_CloseFile(_f);
+    }
+
+    if (!meter_ok) return;
+    if (target != cur_ec) lens_set_ae(target);
+}
+
 /* AI WB + data logging for OVF shooters: there is no LiveView raw to meter,
  * so meter the picture just taken during Canon image review -- the same
  * reactive pattern as ETTR's photo path. The captured photo is actually the
@@ -1783,6 +1850,9 @@ static void ai_qr_task(int unused)
             ai_white_point_wb(ai_wb_warmth);
         if (ai_data_logging && ai_lut_log())
             ai_logged_press = 1;   /* the LV path won't log this press again */
+        /* P/Av/Tv exposure via EC (M mode is handled by auto_ettr_step). Meters
+         * the just-taken frame and biases the NEXT shot's exposure comp. */
+        auto_ettr_ec_step();
     }
     ai_qr_running = 0;
 }
@@ -1798,7 +1868,7 @@ PROP_HANDLER(PROP_GUI_STATE)
             auto_ettr_step();
 
         /* AI WB + logging from the just-taken photo (OVF path) */
-        if (!lv && ai_mode_covered() && (ai_white_balance || ai_data_logging)
+        if (!lv && ai_mode_covered() && (ai_white_balance || ai_data_logging || auto_ettr)
             && !ai_qr_running)
         {
             ai_qr_running = 1;
@@ -1975,76 +2045,16 @@ static unsigned int auto_ettr_polling_cbr()
     if (ai_metered && !gui_menu_shown())
         console_hide();
 
-    /* Component 4: re-export ML/DATA/ml_export.json whenever dual-ISO,
-     * ETTR, or Picture Style state changes. No dedicated per-toggle menu
-     * callback exists for these CONFIG_INT-backed items (Requirement 4.2's
-     * "existing config-change callbacks" don't exist in this codebase
-     * either -- same gap as the post-capture hook noted above), so this
-     * polling loop (CBR_SHOOT_TASK, sub-second cadence) is the pragmatic
-     * equivalent: it change-detects and rewrites well within the 2-second
-     * budget without hammering the card every tick. */
-    {
-        static int last_dual_iso = -1, last_ettr = -1;
-        static const char * last_style = NULL;
-        int cur_dual_iso = dual_iso_is_enabled();
-        int cur_ettr = auto_ettr;
-        const char * cur_style = ai_picture_style_name();
-        if (cur_dual_iso != last_dual_iso || cur_ettr != last_ettr ||
-            last_style != cur_style)   /* interned literals: pointer compare is enough */
-        {
-            ai_export_session_write();
-            last_dual_iso = cur_dual_iso;
-            last_ettr = cur_ettr;
-            last_style = cur_style;
-        }
-    }
-
-    /* Per-shot .ml6d sidecar + dual-ISO MakerNote patch: fire once for EVERY
-     * new capture, regardless of shooting mode or ETTR state.
-     *
-     * This used to be a CBR_POST_SHOOT module callback (ai_post_capture_cbr),
-     * on the assumption this fork fires that event after every capture like
-     * mainline Magic Lantern does. CONFIRMED WRONG 2026-07-21 by field test:
-     * 4 real CR2 captures, zero .ml6d sidecars ever written, ML/DATA/SHOTS
-     * never even created. Grepping every module_exec_cbr() call site in
-     * src/ shows CBR_PRE_SHOOT/CBR_POST_SHOOT are never invoked anywhere in
-     * this fork's core -- that handler was dead code that could never run.
-     * (Same reason Lua's own event.post_shoot, registered the same way in
-     * lua.c, doesn't work on this build either -- a separate, pre-existing
-     * gap, not something introduced here.)
-     *
-     * Fixed the same way ai_export_session_write() right above already had
-     * to be (see its comment: "no dedicated per-toggle callback exists...
-     * same gap as the post-capture hook"): poll file_number on the
-     * CBR_SHOOT_TASK cadence (proven to actually fire -- this whole function
-     * runs from it) and change-detect a new capture, instead of relying on
-     * a capture-complete event that doesn't exist here. Covers every
-     * capture regardless of mode/ETTR, restoring (and fixing beyond) the
-     * original ETTR-only sidecar limitation, using a mechanism that's
-     * actually proven to run rather than a plausible-looking dead one. */
-    {
-        static int last_sidecar_file_number = -1;
-        struct card_info * card = get_shooting_card();
-        if (card)
-        {
-            /* skip the first observation (module load / card swap) -- that's
-             * the pre-existing last shot on the card, not a new capture */
-            if (last_sidecar_file_number != -1 && card->file_number != last_sidecar_file_number)
-            {
-                char basename[16];
-                snprintf(basename, sizeof(basename), "IMG_%04d", card->file_number);
-                ai_sidecar_write(basename);
-
-                if (AI_MKNOTE_DUALISO_OFFSET_TODO > 0)
-                {
-                    char cr2_name[16];
-                    snprintf(cr2_name, sizeof(cr2_name), "IMG_%04d.CR2", card->file_number);
-                    ai_makernote_dualiso_patch(cr2_name, AI_MKNOTE_DUALISO_OFFSET_TODO);
-                }
-            }
-            last_sidecar_file_number = card->file_number;
-        }
-    }
+    /* NOTE: the RaZStudio data-export writers (.ml6d per-shot sidecar +
+     * ml_export.json session file + dual-ISO MakerNote patch) were REMOVED
+     * 2026-07-26. StudioRoom's sidecar consumer is disabled in its own source
+     * ("MLExtendedIntelligence disabled -- sidecar-driven corrections caused
+     * issues"); the confirmed-working path reads standard Canon EXIF only
+     * (LensID -> lens tune, ISO -> NR, ColorTemperature -> WB). So these
+     * writers had no consumer -- and were failing to write to ML/DATA anyway
+     * (FIO_CreateFile/CreateFileOrAppend returning NULL for that directory).
+     * The firmware's on-camera WB/exposure/lens adjustments already land in
+     * the standard CR2 EXIF StudioRoom reads, so nothing extra is needed. */
 
     return 0;
 }
@@ -2261,12 +2271,12 @@ static struct menu_entry ettr_menu[] =
                 .help2 = "Dim/clipped highlights are NOT forced white. Glides per press.",
             },
             {
-                .name = "AI WB Warmth",
+                .name = "AI WB Warm/Cool",
                 .priv = &ai_wb_warmth,
-                .max = 4,
-                .choices = CHOICES("Neutral (white prio)", "A1 warm", "A2 warm (skin)", "A3 warm", "A4 warm"),
-                .help  = "Base amber on Canon's WB Shift; gains stay neutral science.",
-                .help2 = "Golden/warm light auto-adds up to A3 more so sun rays stay warm.",
+                .max = 8,
+                .choices = CHOICES("B4 cool", "B3 cool (shade)", "B2 cool", "B1 cool", "Neutral", "A1 warm", "A2 warm (skin)", "A3 warm", "A4 warm"),
+                .help  = "WB ambience via Canon's Amber/Blue shift (~5 mireds/step); WB gains stay neutral.",
+                .help2 = "Cool (B) <- Neutral -> Warm (A). Golden light auto-adds +1 amber so sun stays warm.",
             },
             {
                 .name = "AI Picture Tune",
@@ -2363,7 +2373,8 @@ static unsigned int ettr_init()
         ettr_menu[0].children[0].max = 1;
     }
     menu_add("Expo", ettr_menu, COUNT(ettr_menu));
-    ai_export_session_write();   /* Component 4: initial ML/DATA/ml_export.json */
+    /* ml_export.json session writer removed 2026-07-26 (no StudioRoom consumer;
+     * see the note in auto_ettr_polling_cbr). */
 #if ETTR_VIDEO_GYRO_METADATA
     gyro_bridge_init();          /* Initialize gyro bridge (probes for external IMU) */
     mlv_metadata_init();         /* Register MLV chunk CBR (no-op if mlv_rec not loaded) */

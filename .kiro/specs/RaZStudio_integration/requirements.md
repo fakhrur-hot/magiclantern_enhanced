@@ -1,5 +1,9 @@
 # Requirements Document
 
+> **⚠️ RETIRED 2026-07-26.** Sidecar/`ml_export.json` contract is not used —
+> StudioRoom reads standard CR2 EXIF only (LensID / ISO / ColorTemperature).
+> Firmware writers removed. See `docs/RAZSTUDIO_CONTRACT.md` retired banner.
+
 ## Introduction
 
 This project connects the ML_6D firmware's on-camera AI intelligence

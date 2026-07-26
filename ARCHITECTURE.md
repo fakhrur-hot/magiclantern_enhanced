@@ -18,7 +18,10 @@ Lantern's own controls and surfaced in its menu.
    - **Decision engine** — reads `A:/ML/models/unified.tbl` and applies the
      learned ISO / ALO / HTP through ML's own setters; the *metered* ETTR owns
      the exposure push. Nearest-neighbour lookup, integer-only.
-   - **AI White Balance** — confidence-clipped bright-pixels auto-WB (RAW+JPEG).
+   - **AI White Balance** — confidence-clipped bright-pixels auto-WB (RAW+JPEG),
+     with a green-cast compensation calibrated against Canon's own measured WB,
+     plus a bidirectional **AI WB Warm/Cool** bias (Canon Amber/Blue shift,
+     default Neutral).
    - **AI Picture Tune** — per-lens Canon contrast/saturation (JPEG).
    - **AI Modes** — restricts all of the above to the chosen shooting modes.
 2. **Offline training (internal)** — turns exported logs into `unified.tbl`.
@@ -67,8 +70,8 @@ the retraining path.
 
 - **Single source of adjustment.** Each of ETTR/ISO, WB, ALO, HTP is driven from
   exactly one place (the ETTR module), through ML's own controls and menu.
-- **Integer-only on camera.** No floats, no fractional division; the DIGIC 5+
-  ARM Cortex-R4 has no FPU.
+- **Integer-only on camera.** No floats, no fractional division; the DIGIC 5 /
+  5+ ARM Cortex-R4 core has no FPU.
 - **RAW-based light level.** Exposure is read from the RAW histogram (true
   sensor data), not the ExpSim-brightened preview.
 - **LUT fits the camera.** The LUT is capped (≤128 rows, <8 KB single read);

@@ -31,7 +31,7 @@ jobs:
           mkdir -p release
           MISSING=""
           PRESENT=""
-          for cam in 6D.116 5D3.113 60D.111 650D.104; do
+          for cam in 6D.116 5D3.113 5D3.123 70D.112 650D.104 700D.115 100D.101 EOSM.202; do
             model="${cam%%.*}"
             dest="release/EOS-${model}"
             mkdir -p "$dest"

@@ -1,7 +1,31 @@
 # RaZStudio Integration Contract
 
-Version: 2.0  
-Last updated: 2026-07-21 (sidecar trigger mechanism corrected — see Sidecar Schema section)  
+> ## ⚠️ RETIRED 2026-07-26 — this contract is NOT in use
+>
+> **StudioRoom does not consume `.ml6d` sidecars or `ml_export.json`.** Its own
+> source has the sidecar consumer commented out:
+> `// MLExtendedIntelligence disabled — sidecar-driven corrections caused issues.`
+> The confirmed-working path reads **standard Canon EXIF only** (via LibRaw):
+> **LensID → per-lens tune, ISO → noise reduction, ColorTemperature → WB/tint**.
+> No sidecar, no session file, no MakerNote dual-ISO tag are read.
+>
+> Consequently the firmware writers (`ai_sidecar_write`, `ai_export_session_write`,
+> `ai_makernote_dualiso_patch`) were **removed from `ettr.c`/`ai_lut.h`**
+> 2026-07-26. They had no consumer and were failing to write to `ML/DATA`
+> anyway. The firmware's on-camera WB/exposure/lens adjustments already land in
+> the standard CR2 EXIF StudioRoom reads, so nothing extra is needed.
+>
+> This document is kept for historical reference only. The accurate,
+> shipped integration is StudioRoom's `.kiro/specs/ml6d-cr2-integration`
+> (EXIF-only). One open verification: confirm ML's custom WB gains actually
+> change the CR2's LibRaw-read ColorTemperature/`cam_mul` (field EXIF showed
+> ColorTemperature stuck at 4100 while gains varied) — if not, on-camera AI WB
+> does not reach StudioRoom and only the `lens_tune.tbl` WB trim applies.
+
+---
+
+Version: 2.0 (RETIRED)  
+Last updated: 2026-07-26 (retired — StudioRoom uses EXIF-only, sidecars removed)  
 Spec: `RaZStudio_integration`
 
 This document defines the on-disk contract between the ML_6D firmware

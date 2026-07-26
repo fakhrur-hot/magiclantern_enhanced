@@ -6,12 +6,44 @@ shooting. It improves ETTR, ISO, white balance, ALO/HTP and per-lens picture
 tuning — with a **single source of adjustment per feature**, all through ML's
 existing menu.
 
-Built for the DIGIC-era **ARM cores** in Magic Lantern cameras: no FPU, no GPU,
-no on-camera ML inference. It supports everything original Magic Lantern
-supports. All on-camera logic is **integer-only C** inside the ETTR module.
-The learned model is compressed into a small `unified.tbl` on the SD card; the
-firmware only does a table lookup and integer arithmetic. Model training happens
-offline and is not part of the on-camera code.
+Built for the DIGIC 5 / DIGIC 5+ **ARM Cortex-R4** cores in Magic Lantern
+cameras: no FPU dependency for the AI path, no GPU, no on-camera ML inference.
+It supports everything original Magic Lantern supports. All on-camera AI logic
+is **integer-only C** inside the ETTR module. The learned model is compressed
+into a small `unified.tbl` on the SD card; the firmware only does a table
+lookup and integer arithmetic. Model training happens offline and is not part
+of the on-camera code.
+
+## Supported cameras
+
+This fork targets **DIGIC 5 and DIGIC 5+** bodies only (classification per the
+[Magic Lantern DIGIC wiki](https://wiki.magiclantern.fm/digic)) — the AI
+features are written and tuned for that hardware generation, and are
+**intentionally not built for DIGIC 4 or earlier** (e.g. 60D).
+
+| Camera | Platform dir | DIGIC | Hardware-validated |
+|---|---|---|---|
+| **EOS 6D** | `6D.116` | 5+ | ✅ Primary target — built and field-tested every session |
+| EOS 5D Mark III | `5D3.113`, `5D3.123` | 5+ | ⚠️ Compiles clean; not run on hardware |
+| EOS 70D | `70D.112` | 5+ | ⚠️ Compiles clean; not run on hardware |
+| EOS 650D / Rebel T4i | `650D.104` | 5 | ⚠️ Compiles clean; not run on hardware |
+| EOS 700D / Rebel T5i | `700D.115` | 5 | ⚠️ Compiles clean; not run on hardware |
+| EOS 100D / Rebel SL1 | `100D.101` | 5 | ⚠️ Compiles clean; not run on hardware |
+| EOS M | `EOSM.202` | 5 | ⚠️ Compiles clean; not run on hardware |
+
+**Feature availability is guarded per camera's actual capability, not assumed
+uniform:**
+- The AI-LUT/ETTR/WB engine (`ai_lut.h`) only touches generic ML core APIs
+  (`raw_*`, `lens_*`, `picstyle_*`) that are already ported per-camera by
+  upstream ML; where a capability is a stub on a given body (e.g. no raw
+  LiveView request), the existing `(void*)&raw_lv_request != (void*)&ret_0`-style
+  checks already in `ettr.c` skip that path rather than call a no-op.
+- `sd_uhs` (SD overclocking) has its own **explicit per-body register table**
+  (`sd_uhs.c`); a camera not in that table silently no-ops instead of writing
+  registers blind. All 7 bodies above are in the table.
+- Only **6D** has had any of this actually run on real hardware this project
+  cycle. Treat the other 6 as "should work, unverified" — please report back
+  if you test one.
 
 ## Features (Expo → Auto ETTR)
 
@@ -27,10 +59,19 @@ offline and is not part of the on-camera code.
   driving a color cast (deep shadows glide to the sensor's daylight prior, so
   no blue tint can survive). Runs in both LiveView and, for OVF shooters, from
   the just-taken photo during image review. Affects RAW (as-shot) + JPEG.
-- **AI WB Warmth** — the neutral gains carry the science; a separate amber bias
-  rides **Canon's own WB Shift (B/A)**, exactly how Canon separates White
-  Priority from Ambience Priority. A gentle default warms skin tones, and warm
-  light (golden hour) is detected at the highlights and kept warm automatically.
+- **AI WB Warm/Cool** — the neutral gains carry the science; a separate,
+  user-chosen bias rides **Canon's own WB Shift (Amber/Blue axis, ~5 mireds per
+  step)**, exactly how Canon separates White Priority from Ambience Priority.
+  9 options from **B4 cool** through **Neutral** (default) to **A4 warm** —
+  pick a direction, it's no longer warm-only. Genuinely golden light (well
+  past daylight) still auto-adds up to +1 amber on top of your choice so
+  sunset/sunrise keeps some character, but it can't override a cool/neutral
+  preference the way the old one-directional control could.
+- **ETTR in P / Av / Tv** *(experimental, OVF path)* — Canon's own auto-exposure
+  modes ignore direct shutter/ISO writes, so instead of fighting Canon, this
+  biases its metering via exposure compensation, targeting highlights **0.5–0.7
+  EV under clipping** (not right at it) and converging over a couple of shots.
+  M mode keeps the original direct shutter/ISO ETTR.
 - **AI Lens Tune** — an on-camera editor (modeled on Canon's per-lens AFMA
   memory) for each lens's row in `ML/models/lens_tune.tbl`: picture-style
   contrast/saturation/tone, a per-lens ETTR **exposure bias**, and per-lens WB
@@ -53,19 +94,17 @@ source to see exactly what changed.
 
 | File | What it adds |
 |---|---|
-| `source-dev/modules/ettr/ai_lut.h` | The whole AI engine: AI-LUT scene lookup, confidence-clipped **AI White Balance**, per-lens **AI Lens Tune**, extended ETTR metadata, firmware **data logging**, and the RaZStudio `.ml6d` sidecar + `ml_export.json` session writers. |
+| `source-dev/modules/ettr/ai_lut.h` | The whole AI engine: AI-LUT scene lookup, confidence-clipped **AI White Balance** (with green-cast compensation calibrated against Canon's own measured WB), **AI WB Warm/Cool** bias, per-lens **AI Lens Tune**, extended ETTR metadata, and firmware **data logging**. |
 | `source-dev/modules/ettr/gyro_bridge.{c,h}` | External-IMU-over-hot-shoe + electronic-level bridge and `mlc.gyro()` / `mlc.level()` Lua bindings for video metadata. **Experimental, currently compiled out** — see note below. |
 | `source-dev/modules/ettr/mlv_metadata.{c,h}` | Per-frame GYRO/ETTR blocks embedded into `.MLV` recordings. Same experimental subsystem, currently compiled out. |
 | `models/unified.tbl`, `models/lens_tune.tbl` | The learned scene LUT and the per-lens tuning table (contrast/sat/tone, EV bias, WB trims, CA/fringe). |
-| `docs/RAZSTUDIO_CONTRACT.md` | The firmware ↔ RaZStudio on-disk data contract (sidecar/session schemas, versioning, graceful-degradation rules). |
-| `source-dev/build_tools/validate_sidecar.py` | Validates `.ml6d` sidecars against that contract. |
 | `lua_scripts/mov_metadata.lua` | Companion Gyroflow/metadata logger script (experimental). |
 
 **Modified upstream files:**
 
 | File | Change vs upstream |
 |---|---|
-| `source-dev/modules/ettr/ettr.c` | Auto ISO Optimizer, all AI menu entries + hooks, and per-capture `.ml6d`/session export driven from the shoot-task poll (`CBR_SHOOT_TASK` — this fork's core never fires `CBR_POST_SHOOT`). |
+| `source-dev/modules/ettr/ettr.c` | Auto ISO Optimizer, all AI menu entries + hooks, per-frame highlight metering for **ETTR in P/Av/Tv** via exposure compensation, and firmware-side data logging. |
 | `source-dev/modules/sd_uhs/sd_uhs.c` | Added an **Auto Speed Test** wizard (`Prefs → SD Overclock`) that steps 240→192→160 MHz across reboots, auto-skipping any preset the card rejects (Canon safe-mode register), plus 6D/70D read/write pause hooks. |
 | `source-dev/modules/lua/{lua.c,lua_common.h,Makefile}` | Fixed the long-dormant `LUA_CBR_FUNC(vsync/…)` argument bug, enabled `CONFIG_VSYNC_EVENTS`, and exported the few Lua C API symbols other modules call cross-module. |
 
@@ -76,6 +115,15 @@ source to see exactly what changed.
 > and its objects are dropped from the module link) so core ETTR stays
 > self-contained and robust. Re-enable only after the hot-shoe/flash conflict
 > is resolved and validated on hardware.
+>
+> **A companion-app sidecar contract (`.ml6d` files + `ml_export.json`) was
+> tried and retired.** The intended consumer app doesn't read per-shot
+> sidecar files (it reads standard CR2 EXIF instead — LensID, ISO,
+> ColorTemperature), and the writer was hitting an unresolved on-camera
+> file-write failure besides. Removed entirely rather than keep dead,
+> silently-failing code. The AI's actual corrections (WB, exposure, lens
+> tune) already land in standard Canon EXIF/RAW metadata with no extra
+> firmware plumbing needed.
 
 ## How it works
 
@@ -95,23 +143,27 @@ the very next half-press — no reflash, no reboot.
 
 ## Install
 
-- Grab a release (or a locally built `ai-magiclantern-<camera>-full.zip`) and
-  extract it onto the SD card; the `ML/` tree contains the module + `unified.tbl`
-  + `lens_tune.tbl` and creates `ML/logs/` for the log.
+- Grab the release zip matching your camera (`ai-magiclantern-<camera>.zip` —
+  see [Supported cameras](#supported-cameras) for the exact platform name, e.g.
+  `6D.116`, `5D3.113`) and extract it onto the SD card; the `ML/` tree contains
+  the module + `unified.tbl` + `lens_tune.tbl` and creates `ML/logs/` for the log.
 - Already running Magic Lantern? Copy the AI-integrated `ML/modules/ettr.mo` and
   `ML/models/*.tbl` onto the card. See [INSTALL.md](INSTALL.md).
+- Building locally for a camera other than 6D? `cd source-dev/platform/<camera>
+  && make` — every camera in the support table above builds from the same
+  `source-dev/` tree with no per-camera source changes needed.
 
 ## Repository structure
 
 | Path | Contents |
 |---|---|
-| `source-dev/` | Vendored `magiclantern_simplified` source. Fork changes live in `modules/ettr/` (`ai_lut.h` + `ettr.c` + gyro/mlv), `modules/sd_uhs/` (Auto Speed Test) and `modules/lua/` (see the table above) |
+| `source-dev/` | Vendored `magiclantern_simplified` source, shared by all 7 supported cameras. Fork changes live in `modules/ettr/` (`ai_lut.h` + `ettr.c` + gyro/mlv), `modules/sd_uhs/` (Auto Speed Test) and `modules/lua/` (see the table above). Per-camera platform dirs (`platform/6D.116/`, `platform/5D3.113/`, etc.) are otherwise untouched. |
 | `magiclantern_simplified-dev.zip` | Pristine original-developer source archive, kept for reference/diffing |
 | `models/` | `unified.tbl` (learned LUT) and `lens_tune.tbl` (per-lens tune) |
 | `tools/` | `validate_exposure.py`, `analyze_log.py`, `make_bundle.py`, `make_full_bundle.py` |
-| `docs/` | Validation, troubleshooting, CI/CD, field logging, ETTR-AI integration, RaZStudio contract |
-| `.kiro/` | Kiro specs (RaZStudio_integration, video-gyro-metadata) + steering context |
-| `.github/workflows/` | CI build + release |
+| `docs/` | Validation, troubleshooting, CI/CD, field logging, ETTR-AI integration |
+| `.kiro/` | Kiro specs + steering context |
+| `.github/workflows/` | CI build + release (matrix = every camera in the support table) |
 | `dist/` | Built installers (git-ignored) |
 
 ## Documentation
@@ -119,9 +171,9 @@ the very next half-press — no reflash, no reboot.
 - [INSTALL.md](INSTALL.md) — SD card setup
 - [ARCHITECTURE.md](ARCHITECTURE.md) — data flow and invariants
 - [docs/ETTR_AI_INTEGRATION.md](docs/ETTR_AI_INTEGRATION.md) — how the AI drives ML's ETTR
-- [docs/RAZSTUDIO_CONTRACT.md](docs/RAZSTUDIO_CONTRACT.md) — firmware ↔ RaZStudio `.ml6d`/`ml_export.json` data contract
 - [docs/FIELD_LOGGING_CHECKLIST.md](docs/FIELD_LOGGING_CHECKLIST.md) — collecting training data
 - [docs/VALIDATION.md](docs/VALIDATION.md) · [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) · [docs/CI_CD.md](docs/CI_CD.md)
+- [docs/RAZSTUDIO_CONTRACT.md](docs/RAZSTUDIO_CONTRACT.md) — **retired**; kept for history only (see the banner at its top)
 
 ## Glossary
 
