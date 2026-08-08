@@ -2442,10 +2442,38 @@ static unsigned int auto_ettr_polling_cbr()
             auto_ettr_max_shutter = shutterf_to_raw(1.0f / (float) ai_ml_focal_mm);
     }
 
-    /* Item 1: white-point WB, once per half-press (retry until raw is ready). */
+    /* Item 1: white-point WB.
+     *
+     * Stills: once per half-shutter press (retry until raw is ready), same
+     * as every other AI-covered stills feature's trigger.
+     *
+     * Movie recording (2026-08-08): half-shutter is not the natural gesture
+     * while a clip is rolling -- recording starts via the dedicated movie
+     * button, so the stills trigger above essentially never fires once
+     * actual recording has started. That's exactly backwards: movie mode is
+     * the ONE case where raw LiveView is GUARANTEED active (recording IS the
+     * raw LV feed), so the estimator has its most stable, real per-channel
+     * data right when the stills trigger stops firing. ai_want_raw above
+     * already requests raw LV correctly here (lv is always true while
+     * recording); only the "when do we call ai_white_point_wb()" trigger was
+     * missing. Re-run on a plain wall-clock timer instead, independent of
+     * half-shutter, only while RECORDING is actually true (not just movie
+     * mode + LV framing before the clip starts). */
+#define AI_WB_MOVIE_INTERVAL_S 2   /* re-run at most this often while recording */
     static int ai_wb_done = 0;
+    static int ai_wb_movie_ts = 0;
     int ai_metered = 0;   /* did a raw-metering action run this poll? */
     if (!get_halfshutter_pressed()) ai_wb_done = 0;
+
+    if (ai_on && ai_white_balance && is_movie_mode() && RECORDING)
+    {
+        int now = get_seconds_clock();
+        if (now - ai_wb_movie_ts >= AI_WB_MOVIE_INTERVAL_S && ai_white_point_wb(ai_wb_warmth))
+        {
+            ai_wb_movie_ts = now;
+            ai_metered = 1;
+        }
+    }
     else if (ai_on && ai_white_balance && !ai_wb_done && ai_white_point_wb(ai_wb_warmth))
     {
         ai_wb_done = 1;
