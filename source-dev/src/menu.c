@@ -215,7 +215,7 @@ int get_menu_edit_mode() { return edit_mode; }
 //~ static CONFIG_INT("menu.transparent", semitransparent, 0);
 
 //static CONFIG_INT("menu.first", menu_first_by_icon, ICON_i);
-static CONFIG_INT("menu.first", menu_first_by_icon, ICON_ML_INFO);
+static CONFIG_INT("menu.first", menu_first_by_icon, ICON_ML_EXPO);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 
 void menu_set_dirty() { menu_damage = 1; }
 
@@ -284,7 +284,7 @@ draw_version( void )
 #ifdef CONFIG_RELEASE_BUILD
 int beta_should_warn() { return 0; }
 #else
-CONFIG_INT("beta.warn", beta_warn, 0);
+CONFIG_INT("beta.warn", beta_warn, 1);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 static int get_beta_timestamp()
 {
     struct tm now;

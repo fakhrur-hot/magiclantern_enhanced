@@ -52,21 +52,21 @@
 #include "mlv_metadata.h" /* MLV chunk callback for gyro/level in .MLV recordings */
 #endif
 
-CONFIG_INT("auto.ettr", auto_ettr, 0);
+CONFIG_INT("auto.ettr", auto_ettr, 1);   /* baked from ML/SETTINGS/ettr.cfg, 2026-08-08 */
 static CONFIG_INT("auto.ettr.trigger", auto_ettr_trigger, 3);
-static CONFIG_INT("auto.ettr.ignore", auto_ettr_ignore, 1);
+static CONFIG_INT("auto.ettr.ignore", auto_ettr_ignore, 2);   /* baked 2026-08-08 */
 /* Default ETTR exposure target: 0 => the aggressive -0.5 EV (firmware clamps the
  * target to MIN(level, -0.5); -0.5 is the closest-to-clip ML allows -- its
  * metering-safety margin -- so it's the practical "-1/3 EV, highlights just under
  * clip" aesthetic). Still user-adjustable: Expo > Auto ETTR > Exposure target
  * (-4/-3/-2/-1/-0.5 EV). Was -1 (a full stop below clip, too timid). */
 static CONFIG_INT("auto.ettr.level", auto_ettr_target_level, 0);
-static CONFIG_INT("auto.ettr.max.tv", auto_ettr_max_shutter, 88);
+static CONFIG_INT("auto.ettr.max.tv", auto_ettr_max_shutter, 101);   /* baked 2026-08-08 */
 static CONFIG_INT("auto.ettr.clip", auto_ettr_clip, 0);
-static CONFIG_INT("auto.ettr.mode", auto_ettr_adjust_mode, 0);
+static CONFIG_INT("auto.ettr.mode", auto_ettr_adjust_mode, 1);   /* baked 2026-08-08 */
 static CONFIG_INT("auto.ettr.midtone.snr", auto_ettr_midtone_snr_limit, 6);
 static CONFIG_INT("auto.ettr.shadow.snr", auto_ettr_shadow_snr_limit, 2);
-static CONFIG_INT("auto.ettr.dual.iso", auto_ettr_dual_iso_link, 1);
+static CONFIG_INT("auto.ettr.dual.iso", auto_ettr_dual_iso_link, 0);   /* baked 2026-08-08 */
 static CONFIG_INT("auto.ettr.allow.beeps", auto_ettr_allow_beeps, 1);
 /* When ISO is set to Auto, take over with ETTR + HTP + ALO (default ON).
  * ETTR needs manual ISO, so we switch to manual at the floor and let ETTR
@@ -82,8 +82,9 @@ static CONFIG_INT("auto.ettr.ai.logging", ai_data_logging, 1);
 static CONFIG_INT("auto.ettr.ai.wb", ai_white_balance, 0);
 
 /* AI picture tune: per-lens Canon contrast/saturation from lens_tune.tbl.
- * JPEG-only (picstyle does not touch RAW). Default OFF. */
-static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 0);
+ * JPEG-only (picstyle does not touch RAW). Baked ON from ML/SETTINGS/ettr.cfg,
+ * 2026-08-08 (was default OFF). */
+static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 1);
 
 /* AI WB warm/cool bias as a menu INDEX 0..8 that maps to Canon's WB-Shift
  * Amber/Blue axis, signed step = index - 4 (so 0=B4 cool .. 4=Neutral ..
@@ -199,8 +200,8 @@ static CONFIG_INT("auto.ettr.ai.ml.active", ai_ml_active, 0);
 static CONFIG_INT("auto.ettr.ai.flash.mode", ai_flash_mode, 0);
 
 /* Which shooting modes the whole AI system acts in.
- *   0 = P, M        (default)
- *   1 = P, M, Av, Tv
+ *   0 = P, M
+ *   1 = P, M, Av, Tv   (baked default from ML/SETTINGS/ettr.cfg, 2026-08-08)
  *
  * Per-mode control matrix (2026-07-27 redesign). Every covered mode gets the
  * SAME base package -- ALO-level-or-HTP auto-select (ai_apply_alo_htp, one or
@@ -217,7 +218,7 @@ static CONFIG_INT("auto.ettr.ai.flash.mode", ai_flash_mode, 0);
  * In every mode the AI never touches the parameter the user explicitly owns
  * (Av's aperture, Tv's shutter) -- it only ever biases the METERED target,
  * never writes shutter/aperture directly outside M. */
-static CONFIG_INT("auto.ettr.ai.modes", ai_modes, 0);
+static CONFIG_INT("auto.ettr.ai.modes", ai_modes, 1);
 
 /* True if the AI system should act in the current shooting mode. */
 static int ai_mode_covered(void)

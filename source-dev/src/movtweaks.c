@@ -630,8 +630,8 @@ static MENU_UPDATE_FUNC(bv_display)
         );
 }
 
-CONFIG_INT("bv.iso", bv_iso, 88);
-CONFIG_INT("bv.tv", bv_tv, 111);
+CONFIG_INT("bv.iso", bv_iso, 104);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
+CONFIG_INT("bv.tv", bv_tv, 96);      /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 CONFIG_INT("bv.av", bv_av, 48);
 
 void bv_enable()

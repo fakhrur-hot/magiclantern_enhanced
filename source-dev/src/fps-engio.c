@@ -172,12 +172,12 @@ static inline int get_fps_override()
 #endif
 }
 
-static CONFIG_INT("fps.override.idx", fps_override_index, 10);
+static CONFIG_INT("fps.override.idx", fps_override_index, 18);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 
 // 1000 = zero, more is positive, less is negative
 static CONFIG_INT("fps.timerA.off", desired_fps_timer_a_offset, 0); // add this to default Canon value
 static CONFIG_INT("fps.timerB.off", desired_fps_timer_b_offset, 0); // add this to computed value (for fine tuning)
-static CONFIG_INT("fps.preset", fps_criteria, 0);
+static CONFIG_INT("fps.preset", fps_criteria, 1);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 static CONFIG_INT("fps.wav.record", fps_wav_record, 0);
 
 static CONFIG_INT("fps.const.expo", fps_const_expo, 0);

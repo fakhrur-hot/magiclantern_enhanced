@@ -1280,7 +1280,7 @@ void display_orientation_toggle(void* priv, int dir)
 
 CONFIG_INT("digital.zoom.shortcut", digital_zoom_shortcut, 1);
 
-static CONFIG_INT("arrows.mode", arrow_keys_mode, 0);
+static CONFIG_INT("arrows.mode", arrow_keys_mode, 12);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 static CONFIG_INT("arrows.set", arrow_keys_use_set, 1);
 #ifdef CONFIG_5D2
     static CONFIG_INT("arrows.audio", arrow_keys_audio, 0);

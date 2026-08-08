@@ -168,7 +168,7 @@ static CONFIG_INT("disp.mode", disp_mode, 0);
 static CONFIG_INT("disp.mode.a", disp_mode_a, 1);
 static CONFIG_INT("disp.mode.b", disp_mode_b, 1);
 static CONFIG_INT("disp.mode.c", disp_mode_c, 1);
-static CONFIG_INT("disp.mode.x", disp_mode_x, 1);
+static CONFIG_INT("disp.mode.x", disp_mode_x, 455);   /* baked from ML/SETTINGS/magic.cfg, 2026-08-08 */
 
 static CONFIG_INT( "transparent.overlay", transparent_overlay, 0);
 static CONFIG_INT( "transparent.overlay.x", transparent_overlay_offx, 0);
