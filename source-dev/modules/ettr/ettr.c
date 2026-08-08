@@ -2129,24 +2129,56 @@ static void auto_ettr_ec_step(void)
      * continuing. ai_ec_floor_halfstop below is a blunt cap for this; the original
      * M-mode ETTR (auto_ettr_work) avoids the whole problem with a real
      * midtone/shadow noise-floor limit (auto_ettr_midtone_snr_limit /
-     * auto_ettr_shadow_snr_limit) that this experimental path doesn't have. */
+     * auto_ettr_shadow_snr_limit) that this experimental path doesn't have.
+     *
+     * BRIGHTENING-SIDE CAP (2026-08-08, field data): the mirror-image of the
+     * FIELD BUG above also happens, in the OPPOSITE direction -- a dark
+     * subject filling most of the frame, with a smaller bright element off
+     * to one side, reads as "the brightest 0.1% still has headroom" every
+     * poll, so the loop keeps brightening. ML/logs/ETTR_EC.TXT (463 metered
+     * decisions, unmodified logic) shows exactly this ratchet: targetEC
+     * climbed to 15 (1/8 EV) = +1.88 EV, one step short of the +2.0 EV
+     * (AI_EC_BRIGHTEN_CAP_E8's old value, 16) hard ceiling -- and the very
+     * next frame (IMG_8240, dark center subject / bright off-center patch,
+     * confirmed via rawpy: center mean 21.6/255 vs frame mean 33.6/255, RAW
+     * itself never clipped) shot at ExposureBiasValue +1.5 EV. So the
+     * ceiling was doing exactly nothing to prevent the overexposure it was
+     * supposedly bounding -- it only stops runaway PAST +2 EV, and this scene
+     * never needed to go past +1 EV in the first place.
+     *
+     * AI_EC_BRIGHTEN_CAP_E8 16 -> 8 (+2.0 EV -> +1.0 EV) halves the worst-case
+     * brightening excursion this loop can reach, regardless of how far off
+     * the highlight metering's own read is. AI_EC_HEADROOM_{SEVERE,HIGH,MID}
+     * 70/60/50 -> 100/90/80 (0.70/0.60/0.50 EV -> 1.00/0.90/0.80 EV) raises
+     * the bar for "no further brightening needed" the same way -- median
+     * measured clipp is 1004 permille (the >=980 SEVERE tier), so nearly
+     * every decision in the field data was already on the most conservative
+     * tier and still chose to brighten; requiring more headroom there directly
+     * reduces both how often and how far this path pushes EC upward. Neither
+     * change touches delta8's own per-step damping/clamp -- same method, same
+     * convergence shape, just a lower ceiling and a stricter target. */
+#define AI_EC_BRIGHTEN_CAP_E8   8    /* 1/8 EV; +1.0 EV (was 16 = +2.0 EV) */
+#define AI_EC_HEADROOM_SEVERE 100    /* 1/100 EV; clipp >= 980 (was 70) */
+#define AI_EC_HEADROOM_HIGH    90    /* 1/100 EV; clipp >= 900 (was 60) */
+#define AI_EC_HEADROOM_MID     80    /* 1/100 EV; otherwise    (was 50) */
     int cur_ec = lens_info.ae;                /* 1/8 EV, signed */
     int target = cur_ec;
     if (meter_ok)
     {
         int hl = lvls[0] - black; if (hl < 1) hl = 1;
         int clipp = hl * 1000 / span;         /* highlight vs saturation, permille (0..1000) */
-        int headroom = (clipp >= 980) ? 70 : (clipp >= 900) ? 60 : 50;  /* 1/100 EV, by severity */
+        int headroom = (clipp >= 980) ? AI_EC_HEADROOM_SEVERE :
+                        (clipp >= 900) ? AI_EC_HEADROOM_HIGH  : AI_EC_HEADROOM_MID;
         int hl_e2 = (int)(raw_to_ev(lvls[0]) * 100);  /* highlight EV rel. to clip, x100 (<=0) */
         int shift_e2 = (-headroom) - hl_e2;   /* 1/100 EV to move highlight to -headroom */
         int delta8 = COERCE((shift_e2 * 8 / 100) / 2, -8, 8);  /* ->1/8 EV, half-damped, <=1EV/shot */
         /* darken floor: never push more negative than -ai_ec_floor_halfstop/2
-         * EV relative to Canon's own metering (default -1.5 EV). Brightening
-         * (positive delta8) is never capped here -- only the runaway-darkening
-         * direction needed the safety net. 1 half-EV step = 4 eighths. */
+         * EV relative to Canon's own metering (default -1.5 EV). 1 half-EV
+         * step = 4 eighths. Brightening now has its own symmetric ceiling,
+         * AI_EC_BRIGHTEN_CAP_E8 -- see the block comment above. */
         int floor_8 = -ai_ec_floor_halfstop * 4;
-        target = COERCE(cur_ec + delta8, floor_8, 16);     /* darken floor .. +2 EV */
-        target = COERCE(target, -40, 16);                  /* hardware EC range safety */
+        target = COERCE(cur_ec + delta8, floor_8, AI_EC_BRIGHTEN_CAP_E8);
+        target = COERCE(target, -40, AI_EC_BRIGHTEN_CAP_E8);   /* hardware EC range safety */
     }
 
     if (!meter_ok) return;
