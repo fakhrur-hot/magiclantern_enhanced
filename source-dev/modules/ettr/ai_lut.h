@@ -51,8 +51,8 @@ extern void picstyle_set_current_color_tone(int value);
  * -> persistent yellow-green cast on daylight/flat scenes (e.g. IMG_6397: ML
  * 1544/1419 vs Canon 2009/1820). Higher R/B gain = more red/blue = LESS green.
  * Applied to the final estimate so it corrects BOTH the white-point and the
- * daylight-prior paths. Tune against AIWB_DBG.TXT + the CR2's
- * WB_RGGBLevelsMeasured; raise if still green, lower if it goes magenta. */
+ * daylight-prior paths. Tune against the CR2's WB_RGGBLevelsMeasured; raise
+ * if still green, lower if it goes magenta. */
 #define AI_WB_GREENCOMP_R  103   /* x1.03 red  */
 #define AI_WB_GREENCOMP_B  108   /* x1.08 blue */
 #define AI_LUT_MAXROWS 128
@@ -296,9 +296,19 @@ static int ai_find(const char * scene, int light)
     return best;
 }
 
-/* Apply learned HTP/ALO/WB from the LUT. Returns the learned ISO (>0), or -1
+/* Apply the learned ISO/WB from the LUT. Returns the learned ISO (>0), or -1
  * when no LUT row applies (caller then uses its hardcoded fallback). WB is
- * applied only when the scene is confidently known. */
+ * applied only when the scene is confidently known.
+ *
+ * NOTE 2026-07-27: this used to also apply the row's trained htp/alo via
+ * set_htp()/set_alo(). ALO/HTP control moved to a single live-metered chooser
+ * (ai_apply_alo_htp() in ettr.c -- since 2026-08-08 the integer percentile
+ * Scene Optimizer, once per half-shutter press, in every shooting mode);
+ * having the LUT ALSO push its own (stale, trained-
+ * at-a-different-time) htp/alo on top would just be two systems fighting
+ * over the same two controls. row->htp/row->alo are still PARSED (kept for
+ * unified.tbl format/training-pipeline compatibility) but intentionally
+ * unused here now. */
 static int ai_lut_apply(void)
 {
     if (!ai_lut_load()) return -1;
@@ -309,8 +319,6 @@ static int ai_lut_apply(void)
     if (idx < 0) return -1;
 
     struct ai_lut_row * row = &ai_rows[idx];
-    set_htp(row->htp);
-    set_alo(row->alo);
     /* LUT WB is green-referenced; normalize by the row's own green (usually
      * 100, but don't assume -- a retrained row with G!=100 would otherwise be
      * silently wrong) and convert to the 1024=neutral gain scale.
@@ -507,31 +515,6 @@ static int ai_white_point_wb(int warmth)   /* warmth: 0=neutral .. 4=warmest */
     new_b = COERCE(new_b, 256, 1536);
 
     ai_wb_conf = conf;
-
-    /* --- WB estimator instrumentation (TEMPORARY diagnostic, 2026-07-25) ---
-     * Dumps the full internal estimator state every time AI WB runs, from ANY
-     * path (LiveView poll OR OVF/QR review), independent of ai_lut_log()'s
-     * gating (which wasn't firing for OVF shots). One appended line per run to
-     * ML/logs/aiwb_dbg.txt. This is how we find out WHY the estimate lands
-     * green/high on real shots (green kitchen etc.). Remove once diagnosed. */
-    {
-        FIO_CreateDirectory("ML/logs");
-        /* FIO_CreateFileOrAppend: the correct ML idiom (FIO_OpenFile with
-         * O_CREAT does NOT create a missing file in ML's FIO -- that silently
-         * produced no log the first time). Matches ai_lut_log() below. */
-        FILE * _df = FIO_CreateFileOrAppend("ML/logs/aiwb_dbg.txt");
-        if (_df)
-        {
-            char _dl[256];
-            int _dn = snprintf(_dl, sizeof(_dl),
-                "P95 r=%d g=%d b=%d|P50 r=%d g=%d b=%d|conf=%d wsh=%d|"
-                "rhi=%d bhi=%d rmd=%d bmd=%d|rest=%d best=%d|cur=%d/%d new=%d/%d\n",
-                r[1], g[1], b[1], r[2], g[2], b[2], conf, wsh,
-                r_hi, b_hi, r_md, b_md, r_est, b_est, cur_r, cur_b, new_r, new_b);
-            if (_dn > 0) FIO_WriteFile(_df, _dl, _dn);
-            FIO_CloseFile(_df);
-        }
-    }
 
     if (new_r != cur_r || new_b != cur_b)
         lens_set_custom_wb_gains(new_r, AI_WB_NEUTRAL, new_b);

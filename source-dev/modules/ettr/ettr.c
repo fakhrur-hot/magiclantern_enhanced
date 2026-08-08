@@ -93,16 +93,130 @@ static CONFIG_INT("auto.ettr.ai.pictune", ai_picture_tune_en, 0);
  * (0=neutral in the old scheme) don't silently mis-map to a cool bias here. */
 static CONFIG_INT("auto.ettr.ai.wb.tone", ai_wb_warmth, 4);
 
+/* Floor on how far auto_ettr_ec_step() (P/Av/Tv ETTR) may darken via exposure
+ * compensation, relative to Canon's own auto-exposure metering (lens_info.ae
+ * == 0). Stored in HALF-EV steps (value 3 = 3 * 0.5 = "-1.5 EV limit") so the
+ * default can land on a half-stop; whole-EV-only storage couldn't express
+ * that. Default 3 = -1.5 EV, per field preference.
+ *
+ * FIELD BUG 2026-07-27: unlike the original M-mode ETTR (auto_ettr_work),
+ * which already limits its correction against a midtone/shadow noise floor
+ * (auto_ettr_midtone_snr_limit / auto_ettr_shadow_snr_limit below), the P/Av/Tv
+ * EC corrector only ever meters the brightest 0.1% of pixels (p99.9) with NO
+ * such floor. A persistent small bright element in frame (a window, a light
+ * fixture, sky in a doorway) that can never be brought under headroom without
+ * crushing the rest of the scene will make it darken shot after shot with
+ * nothing to stop it short of the hardware EC limit (-5 EV) -- reported in the
+ * field as exposure marching past -2 EV on Canon's own meter and continuing.
+ * This is a blunt safety cap (not a real midtone-SNR model like the M-mode
+ * path has); it stops the runaway but doesn't replace a proper fix. */
+static CONFIG_INT("auto.ettr.ai.ec.floor", ai_ec_floor_halfstop, 3);
+
+/* AI Shutter Control: auto-derive ETTR's "Slowest shutter" limit from the
+ * mounted lens's LIVE focal length (lens_info.focal_len, mm -- reported by
+ * the lens over the electronic mount, so this tracks zooming in real time),
+ * using the classic handholding reciprocal rule: slowest safe shutter =
+ * 1/focal_length seconds (e.g. 50mm -> never slower than 1/50s). When this
+ * is on, auto_ettr_max_shutter (the "Slowest shutter" menu value) is
+ * overwritten every poll instead of using the fixed value the user set
+ * there -- same override relationship AI Picture Tune has with the base
+ * picstyle controls. Falls back to leaving auto_ettr_max_shutter alone
+ * (whatever the user set) if the lens reports no focal length (manual/
+ * adapted glass with no electronic contacts). Full-frame body (6D, crop
+ * factor 1.0, see AI_SENSOR_CROP_FACTOR) -- no crop multiplier needed. Does
+ * not account for image stabilization; the plain rule is intentionally
+ * conservative. */
+static CONFIG_INT("auto.ettr.ai.shutter.reciprocal", ai_shutter_reciprocal, 0);
+
+/* Manual Lens Profiles: up to 10 user-registered prime-lens focal lengths
+ * (+ max aperture) for lenses with no electronic mount -- manual/adapted
+ * glass reports lens_info.focal_len == 0, so AI Shutter Control above has
+ * nothing to read from it. Slot data persists the same way as any other ML
+ * setting (CONFIG_ARRAY_ELEMENT -- same mechanism as HDR's extended-bracket
+ * table in src/hdr.c). "Active" selects which slot, if any, stands in for
+ * the missing electronic focal-length report; 0 = none (AI Shutter Control
+ * leaves auto_ettr_max_shutter untouched on a lens with no CPU contacts and
+ * no active profile, same behavior as before this feature existed).
+ *
+ * Max aperture is stored per slot but NOT currently consumed by any
+ * calculation -- AI Shutter Control only needs focal length. Recorded
+ * because it was explicitly requested and is useful documentation of the
+ * mounted lens; a real use (e.g. gating a wide-open metering assumption)
+ * can be wired in later if a clear need shows up.
+ *
+ * NOTE: listing Canon's own internally-registered lens-correction database
+ * (peripheral illumination / aberration correction) was also requested, but
+ * is NOT implemented -- there is no exposed API for that data in this
+ * Magic Lantern/DryOS codebase (only ML's own unrelated LiveView
+ * vignetting-correction preview feature exists, src/lv-img-engio.c). */
+#define AI_ML_SLOTS 10
+#define AI_ML_APERTURES 11
+/* f/1.0 .. f/6.3 *10 -- index matches the "Max aperture" menu CHOICES */
+static const int ai_ml_aperture_x10[AI_ML_APERTURES] =
+    { 10, 12, 14, 18, 20, 28, 35, 40, 45, 56, 63 };
+
+static int ai_ml_focal[AI_ML_SLOTS];    /* mm, 0 = empty slot */
+static int ai_ml_ap_idx[AI_ML_SLOTS];   /* index into ai_ml_aperture_x10 */
+
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.0", ai_ml_focal, 0, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.1", ai_ml_focal, 1, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.2", ai_ml_focal, 2, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.3", ai_ml_focal, 3, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.4", ai_ml_focal, 4, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.5", ai_ml_focal, 5, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.6", ai_ml_focal, 6, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.7", ai_ml_focal, 7, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.8", ai_ml_focal, 8, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.focal.9", ai_ml_focal, 9, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.0", ai_ml_ap_idx, 0, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.1", ai_ml_ap_idx, 1, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.2", ai_ml_ap_idx, 2, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.3", ai_ml_ap_idx, 3, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.4", ai_ml_ap_idx, 4, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.5", ai_ml_ap_idx, 5, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.6", ai_ml_ap_idx, 6, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.7", ai_ml_ap_idx, 7, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.8", ai_ml_ap_idx, 8, 0);
+CONFIG_ARRAY_ELEMENT("auto.ettr.ai.ml.ap.9", ai_ml_ap_idx, 9, 0);
+
+/* Which slot the "Focal length" / "Max aperture" editors below point at. */
+static CONFIG_INT("auto.ettr.ai.ml.slot", ai_ml_slot, 1);
+
+/* Active profile for AI Shutter Control's manual-lens fallback: 0 = none. */
+static CONFIG_INT("auto.ettr.ai.ml.active", ai_ml_active, 0);
+
+/* AI Flash Mode: 0 = Off, 1 = E-TTL, 2 = Manual. A pure workflow toggle --
+ * it does NOT program the flash itself (E-TTL vs. Manual power stays on the
+ * speedlite/camera flash menu, exactly as always); it only tells this module
+ * which system is handling the subject's light today, so it knows to force
+ * Canon's own METERING MODE to Partial (see ai_flash_metering_step). With
+ * flash doing the fill, the ambient meter should read the subject/background
+ * in isolation for a correct base exposure -- evaluative/center-weighted
+ * metering gets skewed by the flash's own preflash and by whatever's outside
+ * the subject, and the user is going to dial the flash's OWN power to fill
+ * the subject/center regardless. Off (default) -> this feature never touches
+ * the metering mode; whatever Canon (or the user) has set is left alone. */
+static CONFIG_INT("auto.ettr.ai.flash.mode", ai_flash_mode, 0);
+
 /* Which shooting modes the whole AI system acts in.
  *   0 = P, M        (default)
  *   1 = P, M, Av, Tv
- * In every covered mode the AI never touches the parameter the user owns:
- *   Av -> aperture is the user's (AI adjusts ISO/shutter via Canon Auto ISO)
- *   Tv -> shutter is the user's (AI adjusts ISO/aperture via Canon Auto ISO)
- *   M  -> AI (metered ETTR) may drive ISO+shutter fully
- *   P  -> Canon owns shutter+aperture; AI adds HTP/ALO + learned ISO floor
- * ETTR's metered highlight push runs only in M (ML limitation); Av/Tv/P use
- * Canon's native Auto ISO, which by construction never touches the locked one. */
+ *
+ * Per-mode control matrix (2026-07-27 redesign). Every covered mode gets the
+ * SAME base package -- ALO-level-or-HTP auto-select (ai_apply_alo_htp, one or
+ * the other, never both -- see there), and AI Picture Tune's per-lens
+ * contrast/saturation -- plus a mode-specific slice of exposure control:
+ *   M  : AI owns ISO+shutter outright (the metered ETTR path, auto_ettr_work).
+ *   Av : base package, PLUS shutter -- aperture stays the user's; AI reaches
+ *        shutter through auto_ettr_ec_step's exposure-compensation bias,
+ *        which in Av Canon's own AE resolves by moving the shutter.
+ *   Tv : base package, PLUS aperture -- shutter stays the user's; same EC
+ *        bias, which in Tv Canon resolves by moving the aperture.
+ *   P  : base package, and EVERYTHING -- Canon's Program AE resolves the EC
+ *        bias by moving shutter and/or aperture along the program line.
+ * In every mode the AI never touches the parameter the user explicitly owns
+ * (Av's aperture, Tv's shutter) -- it only ever biases the METERED target,
+ * never writes shutter/aperture directly outside M. */
 static CONFIG_INT("auto.ettr.ai.modes", ai_modes, 0);
 
 /* True if the AI system should act in the current shooting mode. */
@@ -114,12 +228,203 @@ static int ai_mode_covered(void)
     return 0;
 }
 
+/* --------------------------------------------------------------------------
+ * ALO/HTP Scene Optimizer (2026-08-08, .kiro/specs/alo-htp-optimizer)
+ *
+ * Replaces the float scene_dr/highlight_headroom chooser that lived here
+ * (2026-07-27) with an INTEGER-ONLY classifier driven straight off the raw
+ * histogram percentiles the AI path already meters for free:
+ *
+ *   P90 green (ai_light_level() return value, 0..255) -- overall brightness
+ *   P99 green (ai_raw_p99, 0..255)                    -- highlight peak
+ *
+ * Three zones, each with a fixed ALO level, HTP state, and a MINIMAL single
+ * Canon step (8 raw units = 1/3 EV) of exposure -- deliberately far less
+ * aggressive than the metered ETTR path:
+ *
+ *   P99 >= 240            -> Bright: HTP on,  ALO Low, ISO -1/3 EV
+ *                            (at the ISO 100 floor, P mode nudges the shutter
+ *                             1/3 EV faster instead; Av/Tv/M leave it alone)
+ *   else P90 < 80         -> Dark:   HTP off, ALO Low/Std/High by how dark,
+ *                            ISO +1/3 EV
+ *   else                  -> Normal: HTP on,  ALO Std, exposure untouched
+ *
+ * Bright is tested FIRST: a scene can be dark in the midtones and still have
+ * clipping speculars, and blown highlights are unrecoverable while shadows
+ * are not. HTP stays OFF in the Dark zone on purpose -- its ISO 200 floor
+ * costs exactly the shadow SNR that zone needs.
+ *
+ * Mutual exclusion is hardware, not just policy: Canon's PROP_ALO reports
+ * "actual ALO setting, maybe disabled by HTP" (see GENERIC_GET_ALO in
+ * src/cfn-generic.h), so set_htp() is always written BEFORE set_alo() -- a
+ * Bright/Normal -> Dark transition must clear HTP before the ALO level it
+ * was suppressing can take effect.
+ *
+ * Aperture is NEVER touched, in any mode. Shutter is only ever touched in P,
+ * and only as the Bright-zone-at-ISO-floor fallback. Every write is skipped
+ * when the value already matches, so a static scene stops writing Canon
+ * properties after the first press.
+ *
+ * THRESHOLD CALIBRATION 2026-08-08 (field data, NOT the spec's opening values).
+ * Measured against the 40 raw-metered half-presses in ML/logs/unified_log.txt
+ * (the only records where LightSrc=raw, i.e. where these percentiles are real
+ * -- the other 189 fell back to the display histogram and carry P99 = -1).
+ *
+ * The spec's DARK_THRESHOLD 80 was written against a 0..255 scale assumed to
+ * behave like a JPEG histogram. It does not: ai_light_level() meters the
+ * LiveView RAW frame with GRAY_PROJECTION_DARK_ONLY, whose P90 ran a MEDIAN of
+ * 36 across the session (p75 = 60). So "P90 < 80" fired on 77.5% of presses --
+ * the Dark zone, which is the one and only place this function ADDS exposure
+ * (ISO +1/3 EV) and the one place it turns HTP OFF. A systematic +1/3 EV push
+ * with highlight protection disabled, on three presses out of four, is a
+ * standing overexposure bias, and it showed: IMG_8222 came back with 10.5% of
+ * its raw pixels within a stop of saturation and 16.9% of the JPEG blown.
+ *
+ * DARK_THRESHOLD 80 -> 36 (the measured median) cuts Dark-zone firing 77.5% ->
+ * 40.0%, a 48% reduction -- deliberately HALF the correction, not all of it,
+ * so the shadow-lift behaviour is damped rather than removed. It buys two
+ * anti-overexposure effects from one value: the +1/3 EV nudge stops on 37.5%
+ * of presses, and HTP (highlight protection) coverage rises 22.5% -> 60.0%.
+ *
+ * DARK_SEVERE / DARK_MODERATE are rescaled with it, keeping the spec's 0.31 /
+ * 0.63 band ratios. This is REQUIRED, not cosmetic: DARK_MODERATE must stay
+ * below DARK_THRESHOLD or `p90 < DARK_MODERATE` is always true inside the Dark
+ * zone and resolve_alo()'s ALO_LOW branch becomes unreachable. All three bands
+ * verified still populated on the field data (High 7 / Std 5 / Low 4).
+ *
+ * BRIGHT_THRESHOLD 240 -> 220 is free margin: the measured P99 distribution is
+ * bimodal with an empty gap between 153 and 244, so every value from 160 to
+ * 240 selects the exact same 12.5% of presses. 220 sits in that gap -- no
+ * behaviour change on this data, a little more headroom on future scenes.
+ *
+ * ISO_NUDGE_STEP / SHUTTER_NUDGE_STEP stay at 8. They are NOT free tuning
+ * knobs: 8 raw units is Canon's 1/3-EV quantum, and prop_set_rawiso rounds to
+ * it anyway, so a "gentler" 4 would be silently rounded back or rejected.
+ *
+ * Re-tune against field logs as the sample grows -- n=40 is thin, and it is
+ * one session's lighting. */
+#define ISO_RAW_FLOOR       72   /* ISO 100 in Canon raw units (non-HTP floor) */
+#define ISO_NUDGE_STEP       8   /* 1/3 EV in raw ISO units (Canon's quantum) */
+#define SHUTTER_NUDGE_STEP   8   /* 1/3 EV in raw shutter units (+ = faster) */
+#define DARK_THRESHOLD      36   /* P90 below this -> Dark zone   (spec: 80) */
+#define BRIGHT_THRESHOLD   220   /* P99 at/above this -> Bright   (spec: 240) */
+#define DARK_SEVERE         11   /* P90 below this -> ALO High    (spec: 25) */
+#define DARK_MODERATE       23   /* P90 below this -> ALO Std     (spec: 50) */
+
+typedef enum { ZONE_DARK, ZONE_NORMAL, ZONE_BRIGHT } scene_zone_t;
+
+/* Highlight clipping wins over midtone darkness -- see the block comment. */
+static scene_zone_t classify_zone(int p90, int p99)
+{
+    if (p99 >= BRIGHT_THRESHOLD) return ZONE_BRIGHT;
+    if (p90 < DARK_THRESHOLD)    return ZONE_DARK;
+    return ZONE_NORMAL;
+}
+
+static int resolve_alo(scene_zone_t zone, int p90)
+{
+    switch (zone)
+    {
+        case ZONE_DARK:
+            if (p90 < DARK_SEVERE)   return ALO_HIGH;
+            if (p90 < DARK_MODERATE) return ALO_STD;
+            return ALO_LOW;                     /* P90 in [50, 79] */
+        case ZONE_BRIGHT:
+            return ALO_LOW;
+        case ZONE_NORMAL:
+        default:
+            return ALO_STD;
+    }
+}
+
+/* Dark -> OFF (HTP's ISO 200 floor costs shadow SNR); Normal/Bright -> ON. */
+static int resolve_htp(scene_zone_t zone)
+{
+    return (zone != ZONE_DARK);
+}
+
+/* One step of exposure, at most, and never both knobs. Returns 1 if the
+ * shutter fallback was taken instead of the ISO nudge.
+ * cur_iso == 0 means Canon Auto ISO owns it -- 0 +/- 8 is meaningless, so the
+ * nudge is skipped entirely (ALO/HTP still apply). */
+static int compute_nudge(scene_zone_t zone, int cur_iso, int cur_shutter,
+                         int mode, int * out_iso, int * out_shutter)
+{
+    *out_iso = cur_iso;
+    *out_shutter = cur_shutter;
+
+    if (cur_iso == 0) return 0;         /* Auto ISO: leave exposure to Canon */
+
+    switch (zone)
+    {
+        case ZONE_DARK:
+            *out_iso = cur_iso + ISO_NUDGE_STEP;            /* +1/3 EV */
+            return 0;
+
+        case ZONE_BRIGHT:
+            if (cur_iso > ISO_RAW_FLOOR)
+            {
+                *out_iso = cur_iso - ISO_NUDGE_STEP;        /* -1/3 EV */
+            }
+            else if (mode == SHOOTMODE_P)
+            {
+                *out_shutter = cur_shutter + SHUTTER_NUDGE_STEP;  /* 1/3 EV faster */
+                return 1;
+            }
+            /* Av/Tv/M at the floor: the user owns shutter -- no change possible */
+            return 0;
+
+        case ZONE_NORMAL:
+        default:
+            return 0;                   /* no exposure change */
+    }
+}
+
+/* Returns 1 when a scene analysis actually ran (so the caller can burn its
+ * once-per-half-press guard), 0 when no light level was available yet and the
+ * next poll should retry -- same retry shape as the ai_lut_log() path below. */
+static int ai_apply_alo_htp(void)
+{
+    if (!auto_iso_optimizer) return 0;              /* feature gate */
+
+    /* One metering pass yields both percentiles (ai_raw_p99 is a side effect).
+     * ai_light_level() falls back to the LiveView display histogram when the
+     * raw histogram is unavailable; ai_raw_p99 is then -1, which can never
+     * reach BRIGHT_THRESHOLD, so an unknown P99 simply cannot force Bright. */
+    int p90 = ai_light_level();
+    if (p90 < 0) return 0;
+    int p99 = ai_raw_p99;
+
+    scene_zone_t zone = classify_zone(p90, p99);
+
+    int want_htp = resolve_htp(zone);
+    int want_alo = resolve_alo(zone, p90);
+
+    int want_iso, want_shutter;
+    compute_nudge(zone, lens_info.raw_iso, lens_info.raw_shutter,
+                  shooting_mode, &want_iso, &want_shutter);
+
+    /* HTP before ALO (Canon suppresses ALO while HTP is on), then exposure.
+     * Each setter is skipped when the value already matches. */
+    if (want_htp != get_htp()) set_htp(want_htp);
+    if (want_alo != get_alo()) set_alo(want_alo);
+    if (want_iso != lens_info.raw_iso) lens_set_rawiso(want_iso);
+    if (want_shutter != lens_info.raw_shutter) lens_set_rawshutter(want_shutter);
+
+    return 1;
+}
+
 static int debug_info = 0;
 static int show_metered_areas = 0;
 
 /* one AI log record per half-press; shared between the LiveView polling path
  * and the OVF image-review (QR) path so they never double-log a shot */
 static int ai_logged_press = 0;
+
+/* same once-per-half-press guard for the ALO/HTP Scene Optimizer. Separate
+ * from ai_logged_press on purpose: data logging is an independent feature and
+ * either one consuming the other's flag would silently disable it. */
+static int ai_scene_opt_press = 0;
 
 #define AUTO_ETTR_TRIGGER_ALWAYS_ON (auto_ettr_trigger == 0 || is_intervalometer_running())
 #define AUTO_ETTR_TRIGGER_AUTO_SNAP (auto_ettr_trigger == 1)
@@ -1718,7 +2023,23 @@ static MENU_UPDATE_FUNC(auto_ettr_update)
 static MENU_UPDATE_FUNC(auto_ettr_max_shutter_update)
 {
     MENU_SET_VALUE("%s", ettr_format_shutter(auto_ettr_max_shutter));
-    
+
+    if (ai_shutter_reciprocal)
+    {
+        if (lens_info.focal_len <= 0 && ai_ml_active >= 1 && ai_ml_active <= AI_ML_SLOTS
+            && ai_ml_focal[ai_ml_active - 1] > 0)
+        {
+            MENU_SET_WARNING(MENU_WARN_INFO,
+                "AI Shutter Control is ON -- following Manual Lens Profile slot %d (%d mm), no CPU lens detected.",
+                ai_ml_active, ai_ml_focal[ai_ml_active - 1]);
+        }
+        else
+        {
+            MENU_SET_WARNING(MENU_WARN_INFO,
+                "AI Shutter Control is ON -- this value follows the lens zoom (1/focal_length), not your manual setting.");
+        }
+    }
+
     if (auto_ettr_max_shutter < SHUTTER_30s)
     {
         MENU_SET_RINFO("BULB");
@@ -1761,7 +2082,7 @@ static MENU_SELECT_FUNC(auto_ettr_max_shutter_toggle)
  * target_ec = cur_ec + needed_shift; the next frame re-meters the result and
  * converges. Half-damped and step-clamped (max +/-1 EV/shot) to avoid
  * oscillation; one-shot lag in OVF (meter shot N at review -> EC for N+1),
- * same as AI WB. Logs each decision to ML/logs/ettr_ec.txt.
+ * same as AI WB.
  *
  * SCOPE: iteration 1 is OVF only (metered from the QR/review frame) -- the
  * confirmed field use case. LiveView auto-mode ETTR is a deliberate follow-up.
@@ -1784,46 +2105,48 @@ static void auto_ettr_ec_step(void)
     int black = raw_info.black_level;
     int white = raw_info.white_level;
     int span  = white - black;
-    int pcts[2] = {999, 950};
-    int lvls[2] = {-1, -1};
+    /* [2]=50 (5.0th percentile, shadow) fed the old float ALO/HTP chooser's
+     * scene_dr; the Scene Optimizer is percentile/integer-based and runs off
+     * its own half-press pass now (see ai_apply_alo_htp), so only lvls[0] is
+     * still consumed here. Kept in the same request -- it is free. */
+    int pcts[3] = {999, 950, 50};
+    int lvls[3] = {-1, -1, -1};
     int meter_ok = (span >= 8) &&
-        (raw_hist_get_percentile_levels(pcts, lvls, 2,
+        (raw_hist_get_percentile_levels(pcts, lvls, 3,
             GRAY_PROJECTION_MAX_RGB | GRAY_PROJECTION_DARK_ONLY, 4) == 1) &&
         (lvls[0] >= 0);
 
     /* TARGET = headroom UNDER clip (not at clip): aim the brightest highlights
      * 0.5..0.70 EV below saturation, more headroom the closer they are to
-     * clipping. This is a FIXED POINT -> converges and settles, so it can't
-     * run away / over-darken (the property the removed exact-exposure guard
-     * was meant to give; that guard never fired anyway with Auto ISO). */
+     * clipping. This IS a fixed point for a STATIC highlight -- it converges
+     * and settles rather than oscillating -- but it is NOT bounded against
+     * the rest of the scene: it only ever looks at the brightest 0.1% of
+     * pixels. FIELD BUG 2026-07-27: a persistent small bright element (a
+     * window, a light fixture) that can't be brought under headroom without
+     * crushing the midtones will make this "converge" at an increasingly
+     * dark exposure shot after shot, with nothing to stop it short of the
+     * hardware EC limit -- reported as exposure marching past -2 EV and
+     * continuing. ai_ec_floor_halfstop below is a blunt cap for this; the original
+     * M-mode ETTR (auto_ettr_work) avoids the whole problem with a real
+     * midtone/shadow noise-floor limit (auto_ettr_midtone_snr_limit /
+     * auto_ettr_shadow_snr_limit) that this experimental path doesn't have. */
     int cur_ec = lens_info.ae;                /* 1/8 EV, signed */
-    int clipp = 0, hl_e2 = 0, headroom = 0, shift_e2 = 0, delta8 = 0, target = cur_ec;
+    int target = cur_ec;
     if (meter_ok)
     {
         int hl = lvls[0] - black; if (hl < 1) hl = 1;
-        clipp = hl * 1000 / span;             /* highlight vs saturation, permille (0..1000) */
-        headroom = (clipp >= 980) ? 70 : (clipp >= 900) ? 60 : 50;  /* 1/100 EV, by severity */
-        hl_e2 = (int)(raw_to_ev(lvls[0]) * 100);  /* highlight EV rel. to clip, x100 (<=0) */
-        shift_e2 = (-headroom) - hl_e2;        /* 1/100 EV to move highlight to -headroom */
-        delta8 = COERCE((shift_e2 * 8 / 100) / 2, -8, 8);  /* ->1/8 EV, half-damped, <=1EV/shot */
-        target = COERCE(cur_ec + delta8, -40, 16);         /* -5..+2 EV; lens_set_ae re-clamps */
-    }
-
-    /* log EVERY call to ML/logs (writable), before any early-out */
-    FIO_CreateDirectory("ML/logs");
-    FILE * _f = FIO_CreateFileOrAppend("ML/logs/ettr_ec.txt");
-    if (_f)
-    {
-        char _l[176];
-        int _n = meter_ok
-            ? snprintf(_l, sizeof(_l),
-                "mode=%d clip=%d hlEV=%d headroom=%d shift=%d curEC=%d d8=%d targetEC=%d\n",
-                shooting_mode, clipp, hl_e2, headroom, shift_e2, cur_ec, delta8, target)
-            : snprintf(_l, sizeof(_l),
-                "mode=%d meter=NA span=%d lvl=%d curEC=%d\n",
-                shooting_mode, span, lvls[0], cur_ec);
-        if (_n > 0) FIO_WriteFile(_f, _l, _n);
-        FIO_CloseFile(_f);
+        int clipp = hl * 1000 / span;         /* highlight vs saturation, permille (0..1000) */
+        int headroom = (clipp >= 980) ? 70 : (clipp >= 900) ? 60 : 50;  /* 1/100 EV, by severity */
+        int hl_e2 = (int)(raw_to_ev(lvls[0]) * 100);  /* highlight EV rel. to clip, x100 (<=0) */
+        int shift_e2 = (-headroom) - hl_e2;   /* 1/100 EV to move highlight to -headroom */
+        int delta8 = COERCE((shift_e2 * 8 / 100) / 2, -8, 8);  /* ->1/8 EV, half-damped, <=1EV/shot */
+        /* darken floor: never push more negative than -ai_ec_floor_halfstop/2
+         * EV relative to Canon's own metering (default -1.5 EV). Brightening
+         * (positive delta8) is never capped here -- only the runaway-darkening
+         * direction needed the safety net. 1 half-EV step = 4 eighths. */
+        int floor_8 = -ai_ec_floor_halfstop * 4;
+        target = COERCE(cur_ec + delta8, floor_8, 16);     /* darken floor .. +2 EV */
+        target = COERCE(target, -40, 16);                  /* hardware EC range safety */
     }
 
     if (!meter_ok) return;
@@ -1900,51 +2223,72 @@ void auto_ettr_intervalometer_wait()
 
 /* Auto ISO Optimizer:
  * When the user selects Canon "Auto ISO" (lens_info.raw_iso == 0) in P/Av/Tv/M,
- * take over at highest priority: enable ETTR, HTP and ALO, and switch to manual
- * ISO at the floor so ETTR becomes the auto-exposure engine.
+ * take over at highest priority: enable ETTR and switch to manual ISO at the
+ * floor so ETTR becomes the auto-exposure engine.
  *
- * Edge-triggered on purpose: we act once when Auto ISO is engaged, then respect
- * the user afterwards. So if you later turn HTP off (Canon Q menu or ML), the
- * ETTR floor naturally drops from ISO 200 back to ISO 100 (via MIN_ISO), exactly
- * as requested. The 6D has no native ISO 50 for RAW, so 100 is the real floor. */
+ * ISO-floor takeover is still edge-triggered on purpose: we act once when Auto
+ * ISO is engaged, then respect the user afterwards. So if you later turn HTP
+ * off (Canon Q menu or ML), the ETTR floor naturally drops from ISO 200 back
+ * to ISO 100 (via MIN_ISO), exactly as requested. The 6D has no native ISO 50
+ * for RAW, so 100 is the real floor.
+ *
+ * The Auto-ETTR/EC arming below is NOT edge-triggered -- it runs every poll in
+ * every AI-covered mode, per the 2026-07-27 per-mode redesign (see the "AI
+ * Modes" comment above). The ALO/HTP Scene Optimizer fires once per
+ * half-shutter press instead -- see ai_apply_alo_htp. */
 static void auto_iso_optimizer_step()
 {
     if (!auto_iso_optimizer) return;
 
+    int mode_ok = ai_mode_covered();
+
+    /* Keep Auto ETTR (and its half-shutter trigger) armed in every AI-covered
+     * mode, not just M -- this is what lets auto_ettr_ec_step (the P/Av/Tv
+     * exposure-compensation corrector) actually run without the user
+     * separately toggling the base "Auto ETTR" feature: in Av, Canon's own AE
+     * resolves the EC bias by moving the shutter (aperture is the user's); in
+     * Tv, by moving the aperture (shutter is the user's); in P, by moving the
+     * whole Program line (both). */
+    if (mode_ok)
+    {
+        auto_ettr = 1;
+        auto_ettr_trigger = 3;   /* Half-Shutter */
+    }
+
+    /* ALO/HTP Scene Optimizer: one analysis + apply per half-shutter press, in
+     * EVERY shooting mode (P/Av/Tv/M -- the per-mode differences live inside
+     * compute_nudge, not here). Same guard shape as the ai_data_logging path
+     * in the polling CBR: clear on release, set once the analysis has actually
+     * run. ai_apply_alo_htp returns 0 while no light level is available yet,
+     * so a press that starts before the histogram is built retries next poll
+     * instead of silently burning its one shot. */
+    if (!get_halfshutter_pressed())
+        ai_scene_opt_press = 0;
+    else if (!ai_scene_opt_press && ai_apply_alo_htp())
+        ai_scene_opt_press = 1;
+
     static int was_auto_iso = 0;
     int is_auto_iso = (lens_info.raw_iso == 0);
-    int mode_ok = ai_mode_covered();
 
     if (is_auto_iso && mode_ok && !was_auto_iso)
     {
-        /* AI-LUT (single source of adjustment): apply the learned per-scene
-         * HTP/ALO/WB via ML's OWN setters and get the learned starting ISO.
-         * Falls back to the previous hardcoded HTP+ALO when no LUT row applies,
-         * so nothing regresses. The metered ETTR still owns the exposure push.
-         * Wrap with raw_lv_request so the lookup uses the RAW light level even
-         * when AI Data Logging (which otherwise holds raw LV) is off. */
+        /* AI-LUT (single source of adjustment for ISO/WB): get the learned
+         * starting ISO. Wrap with raw_lv_request so the lookup uses the RAW
+         * light level even when AI Data Logging (which otherwise holds raw
+         * LV) is off. ALO/HTP is no longer this function's concern -- see
+         * ai_apply_alo_htp above. */
         int ai_raw_wrap = lv && ((void*)&raw_lv_request != (void*)&ret_0);
         if (ai_raw_wrap) raw_lv_request();
         int ai_iso = ai_lut_apply();
         if (ai_raw_wrap) raw_lv_release();
-        if (ai_iso <= 0)
-        {
-            /* No LUT / no match: enable HTP + ALO as before. HTP also raises the
-             * camera's OWN Auto-ISO floor to 200 (Canon disables ISO 100 under
-             * HTP); with HTP off the floor is 100. */
-            set_htp(1);
-            set_alo(ALO_STD);
-        }
 
         if (shooting_mode == SHOOTMODE_M)
         {
             /* Only in M can ETTR actually drive exposure -- it needs control
              * of ISO+shutter, which Canon owns in P/Av/Tv (ETTR bails out
              * there, see auto_ettr_step / auto_ettr_check_pre_lv). So only in M
-             * do we hand over: arm ETTR, half-shutter meters, ISO at the learned
+             * do we hand over: half-shutter meters, ISO at the learned
              * (or MIN_ISO) floor. MIN_ISO = get_htp() ? 80 (ISO200) : 72 (ISO100). */
-            auto_ettr = 1;
-            auto_ettr_trigger = 3;   /* Half-Shutter */
             lens_set_rawiso(ai_iso > 0 ? ai_iso_to_raw(ai_iso) : MIN_ISO);
         }
         /* P/Av/Tv: deliberately DO NOT force a manual ISO. Canon's native Auto
@@ -1958,9 +2302,41 @@ static void auto_iso_optimizer_step()
     else if (mode_ok) was_auto_iso = 1;
 }
 
+/* AI Flash Mode: force Canon's own metering mode to Partial while a flash
+ * workflow is selected (ai_flash_mode above), and restore whatever metering
+ * mode was active the moment it goes back to Off. Unconditional -- runs
+ * regardless of "AI Modes" coverage or auto_iso_optimizer, since a flash
+ * workflow is orthogonal to which shooting modes the rest of the AI covers
+ * and to whether the AI is even on. */
+static int ai_flash_saved_meter = -1;   /* -1 = nothing saved (flash mode is Off) */
+
+static void ai_flash_metering_step(void)
+{
+    if (ai_flash_mode)
+    {
+        if (ai_flash_saved_meter < 0)
+            ai_flash_saved_meter = metering_mode;   /* capture once, on the Off->on edge */
+        if (metering_mode != PARTIAL_METER)
+        {
+            int m = PARTIAL_METER;
+            prop_request_change(PROP_METERING_MODE, &m, 4);
+        }
+    }
+    else if (ai_flash_saved_meter >= 0)
+    {
+        if (metering_mode != ai_flash_saved_meter)
+        {
+            int m = ai_flash_saved_meter;
+            prop_request_change(PROP_METERING_MODE, &m, 4);
+        }
+        ai_flash_saved_meter = -1;
+    }
+}
+
 static unsigned int auto_ettr_polling_cbr()
 {
     auto_iso_optimizer_step();
+    ai_flash_metering_step();
 
     /* The whole AI system only acts in the user-selected shooting modes. */
     int ai_on = ai_mode_covered();
@@ -1973,6 +2349,25 @@ static unsigned int auto_ettr_polling_cbr()
                       && ((void*)&raw_lv_request != (void*)&ret_0);
     if (ai_want_raw && !ai_raw_req) { raw_lv_request(); ai_raw_req = 1; }
     else if (!ai_want_raw && ai_raw_req) { raw_lv_release(); ai_raw_req = 0; }
+
+    /* AI Shutter Control: reciprocal rule (1/focal_length s) from the lens's
+     * LIVE reported focal length, tracking zoom continuously -- not gated to
+     * half-press, since the whole point is the shutter floor stays correct
+     * the instant you zoom, before you ever press anything. Applies in any
+     * AI-covered mode (M included: it only tightens auto_ettr_work's
+     * shutter_lim, the actual exposure push is unaffected). No electronic
+     * focal-length report (manual/adapted lens, focal_len==0) -> fall back to
+     * the active Manual Lens Profile's registered focal length, if the user
+     * set one; with neither, leave auto_ettr_max_shutter exactly as the user
+     * set it in the menu. */
+    if (ai_on && ai_shutter_reciprocal)
+    {
+        int ai_ml_focal_mm = (int) lens_info.focal_len;
+        if (ai_ml_focal_mm <= 0 && ai_ml_active >= 1 && ai_ml_active <= AI_ML_SLOTS)
+            ai_ml_focal_mm = ai_ml_focal[ai_ml_active - 1];
+        if (ai_ml_focal_mm > 0)
+            auto_ettr_max_shutter = shutterf_to_raw(1.0f / (float) ai_ml_focal_mm);
+    }
 
     /* Item 1: white-point WB, once per half-press (retry until raw is ready). */
     static int ai_wb_done = 0;
@@ -2134,6 +2529,101 @@ static MENU_SELECT_FUNC(ai_lens_tune_reload_select)
     if (ai_picture_tune_en) ai_picture_tune();
 }
 
+/* --- Manual Lens Profiles: on-camera editor for manual/adapted primes ------
+ * Up to AI_ML_SLOTS registered lenses (focal length + max aperture). "Edit
+ * slot" picks which one "Focal length"/"Max aperture" show and edit.
+ * "Active manual lens" is separate from the edit slot -- it's the one AI
+ * Shutter Control actually reads, so other slots can be reviewed/edited
+ * without disturbing what's currently feeding the shutter floor. */
+
+static MENU_UPDATE_FUNC(ai_ml_menu_update)
+{
+    if (ai_ml_active >= 1 && ai_ml_active <= AI_ML_SLOTS && ai_ml_focal[ai_ml_active - 1] > 0)
+    {
+        int idx = ai_ml_active - 1;
+        int ax10 = ai_ml_aperture_x10[COERCE(ai_ml_ap_idx[idx], 0, AI_ML_APERTURES - 1)];
+        MENU_SET_VALUE("Slot %d: %d mm f/%d.%d", ai_ml_active, ai_ml_focal[idx], ax10/10, ax10%10);
+    }
+    else
+    {
+        MENU_SET_VALUE("None active");
+    }
+}
+
+static MENU_UPDATE_FUNC(ai_ml_slot_update)
+{
+    int idx = COERCE(ai_ml_slot, 1, AI_ML_SLOTS) - 1;
+    if (ai_ml_focal[idx] > 0)
+    {
+        int ax10 = ai_ml_aperture_x10[COERCE(ai_ml_ap_idx[idx], 0, AI_ML_APERTURES - 1)];
+        MENU_SET_VALUE("%d (%d mm f/%d.%d)", ai_ml_slot, ai_ml_focal[idx], ax10/10, ax10%10);
+    }
+    else
+    {
+        MENU_SET_VALUE("%d (empty)", ai_ml_slot);
+    }
+    if (ai_ml_slot == ai_ml_active)
+        MENU_SET_RINFO("ACTIVE");
+}
+
+static MENU_UPDATE_FUNC(ai_ml_focal_update)
+{
+    int idx = COERCE(ai_ml_slot, 1, AI_ML_SLOTS) - 1;
+    if (ai_ml_focal[idx] > 0)
+        MENU_SET_VALUE("%d mm", ai_ml_focal[idx]);
+    else
+        MENU_SET_VALUE("(unset)");
+}
+
+/* 1 mm/click -- primes are usually specified to the mm (24, 35, 50, 85...) */
+static MENU_SELECT_FUNC(ai_ml_focal_toggle)
+{
+    int idx = COERCE(ai_ml_slot, 1, AI_ML_SLOTS) - 1;
+    menu_numeric_toggle(&ai_ml_focal[idx], delta, 0, 800);
+}
+
+static MENU_UPDATE_FUNC(ai_ml_aperture_update)
+{
+    int idx = COERCE(ai_ml_slot, 1, AI_ML_SLOTS) - 1;
+    int ax10 = ai_ml_aperture_x10[COERCE(ai_ml_ap_idx[idx], 0, AI_ML_APERTURES - 1)];
+    MENU_SET_VALUE("f/%d.%d", ax10/10, ax10%10);
+}
+
+static MENU_SELECT_FUNC(ai_ml_aperture_toggle)
+{
+    int idx = COERCE(ai_ml_slot, 1, AI_ML_SLOTS) - 1;
+    menu_numeric_toggle(&ai_ml_ap_idx[idx], delta, 0, AI_ML_APERTURES - 1);
+}
+
+static MENU_SELECT_FUNC(ai_ml_clear_select)
+{
+    int idx = COERCE(ai_ml_slot, 1, AI_ML_SLOTS) - 1;
+    ai_ml_focal[idx] = 0;
+    ai_ml_ap_idx[idx] = 0;
+    NotifyBox(2000, "Slot %d cleared", ai_ml_slot);
+}
+
+static MENU_UPDATE_FUNC(ai_ml_active_update)
+{
+    if (ai_ml_active < 1 || ai_ml_active > AI_ML_SLOTS)
+    {
+        MENU_SET_VALUE("None");
+        return;
+    }
+    int idx = ai_ml_active - 1;
+    if (ai_ml_focal[idx] > 0)
+    {
+        int ax10 = ai_ml_aperture_x10[COERCE(ai_ml_ap_idx[idx], 0, AI_ML_APERTURES - 1)];
+        MENU_SET_VALUE("Slot %d (%d mm f/%d.%d)", ai_ml_active, ai_ml_focal[idx], ax10/10, ax10%10);
+    }
+    else
+    {
+        MENU_SET_VALUE("Slot %d", ai_ml_active);
+        MENU_SET_WARNING(MENU_WARN_INFO,
+            "This slot has no focal length registered yet -- edit it below first.");
+    }
+}
+
 static struct menu_entry ettr_menu[] =
 {
     {
@@ -2248,6 +2738,78 @@ static struct menu_entry ettr_menu[] =
                 .choices = CHOICES("P, M", "P, M, Av, Tv"),
                 .help  = "Which shooting modes the whole AI system acts in.",
                 .help2 = "Av keeps your aperture; Tv keeps your shutter; M full control.",
+            },
+            {
+                .name = "AI Flash Mode",
+                .priv = &ai_flash_mode,
+                .max = 2,
+                .choices = CHOICES("Off", "E-TTL", "Manual"),
+                .help  = "Off never touches metering mode. E-TTL/Manual force Partial metering.",
+                .help2 = "Meter the subject/background; let the flash (E-TTL or your own manual power) fill it.",
+            },
+            {
+                .name = "AI ETTR Darken Limit",
+                .priv = &ai_ec_floor_halfstop,
+                .min = 1,
+                .max = 10,
+                .choices = CHOICES("-0.5 EV", "-1.0 EV", "-1.5 EV", "-2.0 EV", "-2.5 EV",
+                                    "-3.0 EV", "-3.5 EV", "-4.0 EV", "-4.5 EV", "-5.0 EV"),
+                .help  = "P/Av/Tv only: how far ETTR may darken vs. Canon's own metering.",
+                .help2 = "Safety cap -- the highlight-only meter has no midtone floor yet.",
+            },
+            {
+                .name = "AI Shutter Control",
+                .priv = &ai_shutter_reciprocal,
+                .max = 1,
+                .help  = "Sets 'Slowest shutter' live from zoom: never slower than 1/focal_length.",
+                .help2 = "Tracks zoom in real time. No effect on primes/manual lenses w/o CPU contacts.",
+            },
+            {
+                .name = "Manual Lens Profiles",
+                .update = ai_ml_menu_update,
+                .select = menu_open_submenu,
+                .icon_type = IT_SUBMENU,
+                .help  = "Register up to 10 manual/adapted prime lenses (focal + max aperture).",
+                .help2 = "Feeds AI Shutter Control's reciprocal rule when the lens reports no focal length.",
+                .children = (struct menu_entry[]) {
+                    {
+                        .name = "Edit slot",
+                        .priv = &ai_ml_slot,
+                        .update = ai_ml_slot_update,
+                        .min = 1, .max = AI_ML_SLOTS,
+                        .help = "Which profile slot the entries below show/edit.",
+                    },
+                    {
+                        .name = "Focal length",
+                        .update = ai_ml_focal_update,
+                        .select = ai_ml_focal_toggle,
+                        .min = 0, .max = 800,
+                        .help  = "This slot's prime lens focal length, in mm.",
+                        .help2 = "0 = empty slot (ignored by AI Shutter Control).",
+                    },
+                    {
+                        .name = "Max aperture",
+                        .update = ai_ml_aperture_update,
+                        .select = ai_ml_aperture_toggle,
+                        .min = 0, .max = AI_ML_APERTURES - 1,
+                        .help  = "This slot's maximum (widest) aperture.",
+                        .help2 = "Stored for reference; not yet used by any AI calculation.",
+                    },
+                    {
+                        .name = "Clear this slot",
+                        .select = ai_ml_clear_select,
+                        .help = "Reset the slot selected above to empty.",
+                    },
+                    {
+                        .name = "Active manual lens",
+                        .priv = &ai_ml_active,
+                        .update = ai_ml_active_update,
+                        .min = 0, .max = AI_ML_SLOTS,
+                        .help  = "Slot AI Shutter Control uses when the mounted lens has no CPU contacts.",
+                        .help2 = "None = leave 'Slowest shutter' as your manual setting on such lenses.",
+                    },
+                    MENU_EOL,
+                },
             },
             {
                 .name = "Auto ISO Optimizer",
