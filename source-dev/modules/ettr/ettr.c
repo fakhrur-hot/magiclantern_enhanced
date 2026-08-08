@@ -2154,13 +2154,41 @@ static void auto_ettr_ec_step(void)
      * measured clipp is 1004 permille (the >=980 SEVERE tier), so nearly
      * every decision in the field data was already on the most conservative
      * tier and still chose to brighten; requiring more headroom there directly
-     * reduces both how often and how far this path pushes EC upward. Neither
-     * change touches delta8's own per-step damping/clamp -- same method, same
-     * convergence shape, just a lower ceiling and a stricter target. */
+     * reduces both how often and how far this path pushes EC upward.
+     *
+     * NEUTRAL RELAX (2026-08-08, follow-up field data): the cap above bounds
+     * the WORST case but does not touch the underlying reason EC never
+     * settles at 0 on its own. Confirmed on hardware: of 16 manual EC resets
+     * to 0.00 across one session (via Canon's own EC dial), all 16 climbed
+     * back above +0.5 EV within 1-8 shots -- 0 exceptions. Root cause is
+     * structural, not a tuning miss: shift_e2 > 0 means the tracked highlight
+     * already has MORE headroom than the target (hl_e2 more negative than
+     * -headroom -- no clipping risk at all), and the old formula treated that
+     * identically to genuine risk, always nudging further AWAY from 0 to
+     * chase the exact target -- an ETTR-style "use all available headroom"
+     * philosophy with no "good enough, defer to Canon's own metering" state.
+     * For any scene without a true near-clip highlight (most of them), that
+     * made positive EC the only reachable equilibrium.
+     *
+     * Split the two cases instead of one continuous formula:
+     *   shift_e2 <= 0 (highlight AT genuine risk, closer to clip than the
+     *     target) -> unchanged: proportional correction toward the headroom
+     *     target, same as before this split existed.
+     *   shift_e2 >  0 (highlight has SPARE headroom, no real risk) -> relax
+     *     cur_ec toward 0 by up to AI_EC_RELAX_STEP_E8 per shot, clamped so
+     *     it lands exactly on 0 rather than overshooting past it. This is
+     *     the only path that can move EC in this branch now -- brightening
+     *     above 0 no longer happens absent a genuine highlight pushing
+     *     toward clip, matching what "never returns to 0" was actually
+     *     asking for: defer to Canon's own metering unless there's a real
+     *     highlight to protect.
+     * Highlight protection itself (the shift_e2 <= 0 branch, and the
+     * darken-floor/ceiling safety net below) is completely unchanged. */
 #define AI_EC_BRIGHTEN_CAP_E8   8    /* 1/8 EV; +1.0 EV (was 16 = +2.0 EV) */
 #define AI_EC_HEADROOM_SEVERE 100    /* 1/100 EV; clipp >= 980 (was 70) */
 #define AI_EC_HEADROOM_HIGH    90    /* 1/100 EV; clipp >= 900 (was 60) */
 #define AI_EC_HEADROOM_MID     80    /* 1/100 EV; otherwise    (was 50) */
+#define AI_EC_RELAX_STEP_E8     2    /* 1/8 EV; max per-shot pull-back to 0 when no real highlight risk exists */
     int cur_ec = lens_info.ae;                /* 1/8 EV, signed */
     int target = cur_ec;
     if (meter_ok)
@@ -2171,10 +2199,23 @@ static void auto_ettr_ec_step(void)
                         (clipp >= 900) ? AI_EC_HEADROOM_HIGH  : AI_EC_HEADROOM_MID;
         int hl_e2 = (int)(raw_to_ev(lvls[0]) * 100);  /* highlight EV rel. to clip, x100 (<=0) */
         int shift_e2 = (-headroom) - hl_e2;   /* 1/100 EV to move highlight to -headroom */
-        int delta8 = COERCE((shift_e2 * 8 / 100) / 2, -8, 8);  /* ->1/8 EV, half-damped, <=1EV/shot */
+        int delta8;
+        if (shift_e2 > 0)
+        {
+            /* spare headroom, no genuine clip risk -- relax toward Canon's
+             * own neutral EC instead of chasing the unused headroom. */
+            delta8 = (cur_ec > 0) ? -MIN(cur_ec, AI_EC_RELAX_STEP_E8) :
+                      (cur_ec < 0) ?  MIN(-cur_ec, AI_EC_RELAX_STEP_E8) : 0;
+        }
+        else
+        {
+            /* genuine risk: highlight at or past the headroom target --
+             * proportional correction, half-damped, <=1EV/shot (unchanged). */
+            delta8 = COERCE((shift_e2 * 8 / 100) / 2, -8, 8);
+        }
         /* darken floor: never push more negative than -ai_ec_floor_halfstop/2
          * EV relative to Canon's own metering (default -1.5 EV). 1 half-EV
-         * step = 4 eighths. Brightening now has its own symmetric ceiling,
+         * step = 4 eighths. Brightening keeps its own symmetric ceiling,
          * AI_EC_BRIGHTEN_CAP_E8 -- see the block comment above. */
         int floor_8 = -ai_ec_floor_halfstop * 4;
         target = COERCE(cur_ec + delta8, floor_8, AI_EC_BRIGHTEN_CAP_E8);
